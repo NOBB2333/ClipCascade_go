@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ClipCascade - Home</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #e0e0e0;
+        }
+
+        .container {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 40px;
+            width: 100%;
+            max-width: 500px;
+        }
+
+        h1 {
+            text-align: center;
+            margin-bottom: 8px;
+            font-size: 28px;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: #999;
+            margin-bottom: 24px;
+        }
+
+        .info-box {
+            background: rgba(108, 99, 255, 0.1);
+            border: 1px solid rgba(108, 99, 255, 0.2);
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 16px;
+        }
+
+        .info-box h3 {
+            font-size: 14px;
+            color: #6c63ff;
+            margin-bottom: 8px;
+        }
+
+        .info-box p {
+            font-size: 13px;
+            color: #ccc;
+            line-height: 1.5;
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+            margin-bottom: 24px;
+        }
+
+        .stat {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 8px;
+            padding: 12px;
+            text-align: center;
+        }
+
+        .stat .value {
+            font-size: 24px;
+            font-weight: 700;
+            color: #6c63ff;
+        }
+
+        .stat .label {
+            font-size: 11px;
+            color: #999;
+            margin-top: 4px;
+        }
+
+        .btn {
+            display: inline-block;
+            padding: 10px 20px;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 8px;
+            color: #e0e0e0;
+            text-decoration: none;
+            font-size: 14px;
+            transition: background .2s;
+        }
+
+        .btn:hover {
+            background: rgba(255, 255, 255, 0.15);
+        }
+
+        .btn-danger {
+            border-color: rgba(255, 107, 107, .3);
+            color: #ff6b6b;
+        }
+
+        .actions {
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>🔗 ClipCascade</h1>
+        <p class="subtitle">Welcome, <strong>{{.username}}</strong></p>
+
+        <div class="info-box">
+            <h3>📡 Server Info</h3>
+            <p>Mode: <strong>{{.mode}}</strong> | Port: <strong>{{.port}}</strong></p>
+            <p>Max message size: <strong>{{.max_size_mib}} MiB</strong></p>
+        </div>
+
+        <div class="stats" id="stats">
+            <div class="stat">
+                <div class="value" id="active">-</div>
+                <div class="label">Active Connections</div>
+            </div>
+            <div class="stat">
+                <div class="value" id="total">-</div>
+                <div class="label">Total Connections</div>
+            </div>
+            <div class="stat">
+                <div class="value" id="inbound">-</div>
+                <div class="label">Inbound Messages</div>
+            </div>
+            <div class="stat">
+                <div class="value" id="outbound">-</div>
+                <div class="label">Outbound Messages</div>
+            </div>
+        </div>
+
+        <div class="actions">
+            {{if .is_admin}}<a href="/advance" class="btn">⚙️ Admin</a>{{end}}
+            <a href="/logout" class="btn btn-danger">🚪 Logout</a>
+        </div>
+    </div>
+
+    <script>
+        async function refreshStats() {
+            try {
+                const res = await fetch('/api/ws-stats', { credentials: 'same-origin' });
+                if (!res.ok || res.redirected) {
+                    console.warn('ws-stats: auth redirect or error', res.status);
+                    return;
+                }
+                const ct = res.headers.get('content-type') || '';
+                if (!ct.includes('application/json')) return;
+                const data = await res.json();
+                document.getElementById('active').textContent = data.active_connections || 0;
+                document.getElementById('total').textContent = data.total_connections || 0;
+                document.getElementById('inbound').textContent = data.total_inbound_msgs || 0;
+                document.getElementById('outbound').textContent = data.total_outbound_msgs || 0;
+            } catch (e) {
+                console.error('ws-stats error:', e);
+            }
+        }
+        refreshStats();
+        setInterval(refreshStats, 3000);
+    </script>
+</body>
+
+</html>
