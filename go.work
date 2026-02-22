@@ -1,8 +1,8 @@
 go 1.25.4
 
 use (
+	./desktop
+	./fyne_mobile
 	./pkg
 	./server
-	./desktop
-	./mobile
 )

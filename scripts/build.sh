@@ -120,27 +120,91 @@ build_desktop_cross() {
     info "✅ 桌面端交叉编译流程结束"
 }
 
-build_mobile_android() {
-    info "正在构建 Android 端 (.aar)..."
-    check_gomobile
+export PATH="$PATH:$(go env GOPATH)/bin"
+
+check_fyne() {
+    if ! command -v fyne &> /dev/null; then
+        warn "未找到 fyne 命令，正在尝试安装..."
+        go install fyne.io/tools/cmd/fyne@latest
+        if ! command -v fyne &> /dev/null; then
+            error "安装 fyne 失败。请确保 $(go env GOPATH)/bin 在您的 PATH 中。"
+            exit 1
+        fi
+        info "✅ fyne 安装成功。"
+    fi
+}
+
+build_desktop_ui() {
+    info "正在构建桌面端 UI 版 (利用 Fyne 可跨所有桌面系统运行)..."
     mkdir -p "$BUILD_DIR"
+    local os=$(go env GOOS)
+    local arch=$(go env GOARCH)
+    
+    cd "$ROOT_DIR/fyne_mobile"
+    go build -ldflags="-s -w" -o "$BUILD_DIR/clipcascade-ui-desktop-$os-$arch" . || { error "桌面 UI 构建失败"; exit 1; }
+    info "✅ 桌面 UI 构建成功 → $BUILD_DIR/clipcascade-ui-desktop-$os-$arch"
     cd "$ROOT_DIR"
-    gomobile bind -target=android -o "$BUILD_DIR/mobile.aar" ./mobile/bridge/ || { error "Android 构建失败"; exit 1; }
-    info "✅ Android 构建成功 → $BUILD_DIR/mobile.aar"
+}
+
+check_fyne_cross() {
+    if ! command -v fyne-cross &> /dev/null; then
+        warn "未找到 fyne-cross 命令，正在尝试安装..."
+        go install github.com/fyne-io/fyne-cross@latest
+        if ! command -v fyne-cross &> /dev/null; then
+            error "安装 fyne-cross 失败。请确保 $(go env GOPATH)/bin 在您的 PATH 中。"
+            exit 1
+        fi
+        info "✅ fyne-cross 安装成功。"
+    fi
+}
+
+build_desktop_ui_cross() {
+    info "正在为所有平台交叉编译桌面端 UI 版 (依靠 Docker 和 fyne-cross)..."
+    check_fyne_cross
+    check_docker
+    mkdir -p "$BUILD_DIR"
+    
+    cd "$ROOT_DIR/fyne_mobile"
+    
+    info "    → 编译中: windows/amd64 (UI 版)"
+    fyne-cross windows -arch=amd64 -app-id com.clipcascade.desktopui || warn "⚠ Windows UI 构建失败 (请检查 Docker)"
+    mv fyne-cross/bin/windows-amd64/fynemobile.exe "$BUILD_DIR/clipcascade-ui-desktop-windows-amd64.exe" 2>/dev/null
+    
+    info "    → 编译中: linux/amd64 (UI 版)"
+    fyne-cross linux -arch=amd64 -app-id com.clipcascade.desktopui || warn "⚠ Linux UI 构建失败"
+    mv fyne-cross/bin/linux-amd64/fynemobile "$BUILD_DIR/clipcascade-ui-desktop-linux-amd64" 2>/dev/null
+    
+    # 清理 Fyne Cross 临时目录
+    rm -rf fyne-cross
+
+    info "✅ 所有平台的 UI 桌面版本交叉编译结束"
+    cd "$ROOT_DIR"
+}
+
+build_mobile_android() {
+    info "正在构建 Android 端 (.apk)..."
+    check_fyne
+    mkdir -p "$BUILD_DIR"
+    cd "$ROOT_DIR/fyne_mobile"
+    fyne package -os android -app-id com.clipcascade.mobile -tags netgo -release
+    mv fynemobile.apk "$BUILD_DIR/clipcascade-mobile.apk" 2>/dev/null || warn "APK 文件生成但未能移动到 build 目录"
+    info "✅ Android 构建成功 → $BUILD_DIR/clipcascade-mobile.apk"
+    cd "$ROOT_DIR"
 }
 
 build_mobile_ios() {
-    local host_os=$(go env GOOS)
-    if [[ "$host_os" != "darwin" ]]; then
-        error "iOS 构建必须在 macOS 上进行。"
+    info "正在构建 iOS 端 (.app)..."
+    if [[ "$(uname)" != "Darwin" ]]; then
+        error "iOS 构建必须在 macOS 上执行。"
         exit 1
     fi
-    info "正在构建 iOS 端 (.xcframework)..."
-    check_gomobile
+    check_fyne
     mkdir -p "$BUILD_DIR"
+    cd "$ROOT_DIR/fyne_mobile"
+    fyne package -os ios -app-id com.clipcascade.mobile -release
+    mv ClipCascade.app "$BUILD_DIR/clipcascade-mobile.app" 2>/dev/null || warn "iOS App 文件生成但未能移动到 build 目录"
+    info "✅ iOS 构建成功 → $BUILD_DIR/clipcascade-mobile.app"
     cd "$ROOT_DIR"
-    gomobile bind -target=ios -o "$BUILD_DIR/Mobile.xcframework" ./mobile/bridge/ || { error "iOS 构建失败"; exit 1; }
-    info "✅ iOS 构建成功 → $BUILD_DIR/Mobile.xcframework"
 }
 
 build_docker() {
@@ -153,7 +217,7 @@ build_docker() {
 
 tidy() {
     info "清理模块依赖..."
-    for d in pkg server desktop mobile; do
+    for d in pkg server desktop; do
         if [ -d "$ROOT_DIR/$d" ]; then
             cd "$ROOT_DIR/$d" && go mod tidy
         fi
@@ -167,21 +231,22 @@ clean() {
 }
 
 show_help() {
-    cat <<EOF
-用法: $0 [目标...]
-
-构建目标:
-  server            构建本地平台服务端
-  server-cross      交叉编译所有平台服务端 (Linux/Mac/Win)
-  desktop           构建本地平台桌面客户端
-  mobile-android    构建 Android 端 (.aar)
-  mobile-ios        构建 iOS 端 (.xcframework) (仅限 macOS)
-  docker            构建 Docker 镜像
-  all               构建本地服务端 + 本地桌面端
-  cross             服务端全平台 + 桌面端跨平台
-  tidy              整理依赖
-  clean             清理 build 目录
-EOF
+    echo "ClipCascade 全能构建脚本 (无 CGO 依赖重制版 & Fyne UI 合并版)"
+    echo "用法: $0 {server|server-cross|desktop|desktop-ui|desktop-ui-cross|cross|mobile-android|mobile-ios|docker|all|tidy|clean}"
+    echo
+    echo "命令:"
+    echo "  desktop          构建当前系统原生隐形式 Desktop 托盘端 (无界面纯后台)"
+    echo "  desktop-ui       构建当前系统的 Fyne 图形化 Desktop 桌面端面板 (可视化操作)"
+    echo "  desktop-ui-cross 跨平台交叉编译 Mac, Windows, Linux 的图形化桌面端面板 (依赖 Docker)"
+    echo "  cross            交叉编译 Mac, Windows, Linux 桌面(无界面)端和全平台 Server"
+    echo "  mobile-android   使用 Fyne 构建 Android (.apk) 安装包"
+    echo "  mobile-ios       使用 Fyne 构建 iOS (.app) (仅限 Mac)"
+    echo "  server           构建本地 Server 二进制文件"
+    echo "  server-cross     交叉编译所有平台 Server 架构"
+    echo "  docker           将 Server 构建为 Docker 镜像"
+    echo "  all              一键满配全平台编译: 隐形式桌面端 + UI式桌面端 + Android + iOS + Server"
+    echo "  tidy             对所有模块运行 'go mod tidy'"
+    echo "  clean            删除生成的 build 目录和所有二进制文件"
 }
 
 # ─── 主流程 ───
@@ -190,14 +255,16 @@ check_go
 
 for target in "$@"; do
     case "$target" in
-        server)         build_server ;;
-        server-cross)   build_server_cross ;;
-        desktop)        build_desktop ;;
-        mobile-android) build_mobile_android ;;
-        mobile-ios)     build_mobile_ios ;;
-        docker)         build_docker ;;
-        all)            build_server; build_desktop ;;
-        cross)          build_server_cross; build_desktop_cross ;;
+        server)           build_server ;;
+        server-cross)     build_server_cross ;;
+        desktop)          build_desktop ;;
+        desktop-ui)       build_desktop_ui ;;
+        desktop-ui-cross) build_desktop_ui_cross ;;
+        cross)            build_server_cross; build_desktop_cross; build_desktop_ui_cross ;;
+        mobile-android)   build_mobile_android ;;
+        mobile-ios)       build_mobile_ios ;;
+        docker)           build_docker ;;
+        all)              build_server_cross; build_desktop_cross; build_desktop_ui; build_desktop_ui_cross; build_mobile_android; build_mobile_ios ;;
         tidy)           tidy ;;
         clean)          clean ;;
         *)              show_help; exit 1 ;;
