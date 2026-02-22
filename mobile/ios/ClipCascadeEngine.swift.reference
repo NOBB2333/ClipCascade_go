@@ -1,0 +1,113 @@
+/**
+ * ClipCascade iOS - Swift Shell Reference
+ *
+ * This is a reference implementation showing how to use the Go mobile framework.
+ * The Go engine is compiled to Mobile.xcframework via gomobile bind.
+ *
+ * Usage:
+ *   1. Run: make mobile-ios
+ *   2. Drag build/Mobile.xcframework into Xcode project
+ *   3. Import the module: import Mobile
+ */
+
+/*
+import UIKit
+import Mobile  // from Mobile.xcframework
+
+class ClipCascadeEngine: NSObject, BridgeMessageCallbackProtocol {
+
+    private var engine: BridgeEngine?
+    private var lastPasteboardChangeCount: Int = 0
+
+    static let shared = ClipCascadeEngine()
+
+    func start(serverURL: String, username: String, password: String, e2ee: Bool) {
+        engine = BridgeNewEngine(serverURL, username, password, e2ee)
+        engine?.setCallback(self)
+
+        DispatchQueue.global(qos: .utility).async {
+            do {
+                try self.engine?.start()
+                self.startClipboardMonitoring()
+            } catch {
+                print("ClipCascade: start error - \(error)")
+            }
+        }
+    }
+
+    func stop() {
+        engine?.stop()
+    }
+
+    // MARK: - BridgeMessageCallbackProtocol
+
+    func onMessage(_ payload: String?, payloadType: String?) {
+        guard let payload = payload, let type = payloadType else { return }
+
+        DispatchQueue.main.async {
+            switch type {
+            case "text":
+                UIPasteboard.general.string = payload
+                self.lastPasteboardChangeCount = UIPasteboard.general.changeCount
+            case "image":
+                if let data = Data(base64Encoded: payload),
+                   let image = UIImage(data: data) {
+                    UIPasteboard.general.image = image
+                    self.lastPasteboardChangeCount = UIPasteboard.general.changeCount
+                }
+            default:
+                break
+            }
+        }
+    }
+
+    func onStatusChange(_ status: String?) {
+        print("ClipCascade: status -> \(status ?? "unknown")")
+        NotificationCenter.default.post(
+            name: .clipCascadeStatusChanged,
+            object: nil,
+            userInfo: ["status": status ?? ""]
+        )
+    }
+
+    // MARK: - Clipboard Monitoring
+
+    private func startClipboardMonitoring() {
+        lastPasteboardChangeCount = UIPasteboard.general.changeCount
+
+        // iOS doesn't have clipboard change notifications in background
+        // Use a timer to poll (only works while app is active)
+        Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.checkClipboard()
+        }
+
+        // Also check on app becoming active
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(checkClipboard),
+            name: UIApplication.didBecomeActiveNotification,
+            object: nil
+        )
+    }
+
+    @objc private func checkClipboard() {
+        let current = UIPasteboard.general.changeCount
+        guard current != lastPasteboardChangeCount else { return }
+        lastPasteboardChangeCount = current
+
+        if let text = UIPasteboard.general.string {
+            engine?.sendClipboard(text, payloadType: "text")
+        } else if let image = UIPasteboard.general.image,
+                  let data = image.pngData() {
+            engine?.sendClipboard(data.base64EncodedString(), payloadType: "image")
+        }
+    }
+}
+
+extension Notification.Name {
+    static let clipCascadeStatusChanged = Notification.Name("clipCascadeStatusChanged")
+}
+*/
+
+// This file serves as a reference. The actual iOS project
+// should be created in Xcode.

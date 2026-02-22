@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ClipCascade - Login</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: linear-gradient(135deg, #0f0c29, #302b63, #24243e); min-height: 100vh; display: flex; align-items: center; justify-content: center; color: #e0e0e0; }
+        .container { background: rgba(255,255,255,0.05); backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.1); border-radius: 16px; padding: 40px; width: 100%; max-width: 400px; }
+        h1 { text-align: center; margin-bottom: 8px; font-size: 28px; }
+        .subtitle { text-align: center; color: #999; margin-bottom: 24px; font-size: 14px; }
+        .form-group { margin-bottom: 16px; }
+        label { display: block; font-size: 13px; color: #aaa; margin-bottom: 6px; }
+        input[type="text"], input[type="password"] { width: 100%; padding: 12px 16px; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; color: #fff; font-size: 15px; outline: none; transition: border .2s; }
+        input:focus { border-color: #6c63ff; }
+        button { width: 100%; padding: 12px; background: linear-gradient(135deg, #6c63ff, #4834d4); color: #fff; border: none; border-radius: 8px; font-size: 16px; font-weight: 600; cursor: pointer; transition: transform .15s, box-shadow .15s; }
+        button:hover { transform: translateY(-1px); box-shadow: 0 4px 20px rgba(108,99,255,.4); }
+        .error { background: rgba(255,107,107,.15); border: 1px solid rgba(255,107,107,.3); color: #ff6b6b; padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; font-size: 14px; }
+        .success { background: rgba(107,255,107,.15); border: 1px solid rgba(107,255,107,.3); color: #6bff6b; padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; font-size: 14px; }
+        .link { text-align: center; margin-top: 16px; font-size: 13px; }
+        .link a { color: #6c63ff; text-decoration: none; }
+        .link a:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔗 ClipCascade</h1>
+        <p class="subtitle">Clipboard Sync Server</p>
+
+        {{if .error}}
+        <div class="error">Invalid username or password.</div>
+        {{end}}
+
+        {{if .logout}}
+        <div class="success">You have been logged out.</div>
+        {{end}}
+
+        <form method="POST" action="/login">
+            <div class="form-group">
+                <label for="username">Username</label>
+                <input type="text" id="username" name="username" required autocomplete="username" placeholder="admin">
+            </div>
+            <div class="form-group">
+                <label for="password">Password</label>
+                <input type="password" id="password" name="password" required autocomplete="current-password" placeholder="••••••••">
+            </div>
+            <button type="submit">Sign In</button>
+        </form>
+        <div class="link"><a href="/signup">Create an account</a></div>
+    </div>
+</body>
+</html>

@@ -1,0 +1,21 @@
+services:
+  clipcascade:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    container_name: clipcascade
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - clipcascade-data:/data
+    environment:
+      - CC_PORT=8080
+      - CC_SIGNUP_ENABLED=true
+      - CC_P2P_ENABLED=false
+      - CC_MAX_MESSAGE_SIZE_IN_MiB=1
+      # - CC_ALLOWED_ORIGINS=https://yourdomain.com
+      # - CC_MAX_USER_ACCOUNTS=10
+
+volumes:
+  clipcascade-data:
