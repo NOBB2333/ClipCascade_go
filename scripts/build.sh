@@ -186,7 +186,7 @@ build_mobile_android() {
     check_fyne
     mkdir -p "$BUILD_DIR"
     cd "$ROOT_DIR/fyne_mobile"
-    fyne package -os android -app-id com.clipcascade.mobile -tags netgo -release
+    fyne package -os android/arm64 -app-id com.clipcascade.mobile -tags netgo -release
     mv fynemobile.apk "$BUILD_DIR/clipcascade-mobile.apk" 2>/dev/null || warn "APK 文件生成但未能移动到 build 目录"
     info "✅ Android 构建成功 → $BUILD_DIR/clipcascade-mobile.apk"
     cd "$ROOT_DIR"

@@ -233,7 +233,7 @@ jobs:
           mkdir -p build
           cd fyne_mobile
           export PATH="$(go env GOPATH)/bin:$PATH"
-          fyne package -os android -app-id com.clipcascade.mobile -tags netgo -release
+          fyne package -os android/arm64 -app-id com.clipcascade.mobile -tags netgo -release
           mv fynemobile.apk ../build/clipcascade-mobile.apk
       - uses: actions/upload-artifact@v4
         with:

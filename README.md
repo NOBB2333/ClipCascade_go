@@ -86,11 +86,14 @@ make clean            # 清理构建产物
 - **交叉编译 (所有平台)**: `./scripts/build.sh cross` (全尺寸编译，一键输出 Mac/Win/Linux 原生程序)
 - **大文件同步特点**: 采用零附加开销的 **“懒加载 (按需传输)”** 架构。复制大文件时仅广播极小的文件路径和大小占位符，只有在对端真正按下 `Ctrl+V` 时，才会触发底层的实时分块数据对传，极大节省系统内存。
 
-### 3. 移动端 (Mobile - Fyne UI)
-原有的 Android/iOS 复杂原生壳工程已被彻底废弃。现在的移动端是一个基于 `fyne.io/fyne/v2` 构建的 **纯 Go 单文件极简应用**。
-- **Android**: 执行 `fyne package -os android` (需安装基础 Android SDK)
-- **iOS**: 执行 `fyne package -os ios` (仅限 macOS)
-- **注意**: 受限于现代移动操作系统的后台安全限制，由于我们使用的是纯 UI 框架，剪贴板的收发需要在 App **处于前台活动状态**时触发。
+### 3. 移动端与桌面 UI 端 (Mobile & Desktop UI - Fyne 原生渲染)
+彻底抛弃了原生 Android Studio/Kotlin 壳和 iOS/Swift 生态，现在的可视化客户端是一个基于 `fyne.io/fyne/v2` 构建的 **100% 纯 Go 单一跨平台架构**。
+
+- **快速产出**: 执行 `./scripts/build.sh desktop-ui` 或 `build.sh mobile-android`。
+- **Android 体积优化**: 默认的自动化脚本中，打包参数强制指定了 `-os android/arm64 -release`，以**单刀直入的方式剔除了对 x86(模拟器)和老旧 32 位手机的兼容代码**。这使得 APK 的体积从默认的 ~120MB **断崖式缩小到了 < 25MB**！
+  - *兼容老旧设备/模拟器*：如果你需要在非常古老的 32 位手机或电脑 x86 安卓模拟器上运行，你需要打开 `scripts/build.sh`，将打包命令从 `android/arm64` 改回全量打包的 `android` (即: `fyne package -os android -app-id com.clipcascade.mobile -tags netgo -release`)，这会打出一个包含 4 种底层架构的庞大 "Fat APK"。
+- **iOS**: 执行 `fyne package -os ios` (仅限 macOS)。请注意，Apple 强制要求开发者证书才能生成可用安装包，免签调试请参考使用 Xcode 或 `gomobile` 绑定的传统姿势。
+- **注意**: 受限于现代操作系统的后台隐私限制，如果你发现剪贴板无法在手机后台被静默抓取，请打开 App 强制保持在前台活动状态重试。
 
 ---
 
