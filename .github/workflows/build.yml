@@ -13,6 +13,10 @@ permissions:
 env:
   GO_VERSION: "1.25"
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.sha }}
+  cancel-in-progress: true
+
 jobs:
   # ──────────────── Test ────────────────
   test:
@@ -212,18 +216,14 @@ jobs:
         run: |
           mkdir -p build
           export PATH="$(go env GOPATH)/bin:$PATH"
-          cp -r pkg fyne_mobile/pkg
-          sed -i 's|../pkg|./pkg|g' fyne_mobile/go.mod
           cd fyne_mobile
-          fyne-cross ${{ matrix.goos }} -arch=${{ matrix.goarch }} -app-id com.clipcascade.desktopui
+          GOWORK=off go mod vendor
+          fyne-cross ${{ matrix.goos }} -arch=${{ matrix.goarch }} -app-id com.clipcascade.desktopui -env "GOFLAGS=-mod=vendor"
           if [ "${{ matrix.goos }}" = "windows" ]; then
             mv fyne-cross/bin/windows-${{ matrix.goarch }}/fynemobile.exe ../build/clipcascade-ui-desktop-windows-${{ matrix.goarch }}.exe
           else
             mv fyne-cross/bin/linux-${{ matrix.goarch }}/fynemobile ../build/clipcascade-ui-desktop-linux-${{ matrix.goarch }}
           fi
-          # Revert go.mod changes locally
-          sed -i 's|./pkg|../pkg|g' go.mod
-          rm -rf pkg
 
       - uses: actions/upload-artifact@v4
         with:
