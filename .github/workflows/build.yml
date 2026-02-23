@@ -67,7 +67,9 @@ jobs:
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: 0
+          CGO_ENABLED: 1
+          CGO_CFLAGS: ${{ matrix.goos == 'darwin' && matrix.goarch == 'amd64' && '-arch x86_64' || '' }}
+          CGO_LDFLAGS: ${{ matrix.goos == 'darwin' && matrix.goarch == 'amd64' && '-arch x86_64' || '' }}
         run: |
           cd server
           EXT=""
@@ -199,6 +201,9 @@ jobs:
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 1
+          CGO_CFLAGS: ${{ matrix.goos == 'darwin' && matrix.goarch == 'amd64' && '-arch x86_64' || '' }}
+          CGO_LDFLAGS: ${{ matrix.goos == 'darwin' && matrix.goarch == 'amd64' && '-arch x86_64' || '' }}
         run: |
           mkdir -p build
           cd fyne_mobile
