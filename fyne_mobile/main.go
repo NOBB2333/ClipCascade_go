@@ -1,12 +1,18 @@
 package main
 
 import (
+	"context"
+	"fmt"
+	"time"
+
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
+
+	"github.com/grandcat/zeroconf"
 )
 
 // Main application entry point for the pure Go Fyne mobile client.
@@ -22,8 +28,9 @@ func main() {
 	title := widget.NewLabelWithStyle("ClipCascade", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
 
 	serverEntry := widget.NewEntry()
-	serverEntry.SetPlaceHolder("http://192.168.1.x:8080")
-	serverEntry.Text = a.Preferences().StringWithFallback("ServerURL", "")
+	serverEntry.SetPlaceHolder("Scanning network... or enter http://ip:8080")
+	serverURL := a.Preferences().StringWithFallback("ServerURL", "")
+	serverEntry.Text = serverURL
 
 	userEntry := widget.NewEntry()
 	userEntry.SetPlaceHolder("Username")
@@ -37,6 +44,31 @@ func main() {
 	e2eCheck.Checked = a.Preferences().BoolWithFallback("E2EE", true)
 
 	statusLabel := widget.NewLabel("Status: Disconnected")
+
+	// 自动通过 mDNS 发现局域网服务器
+	if serverURL == "" || serverURL == "http://localhost:8080" {
+		go func() {
+			resolver, err := zeroconf.NewResolver(nil)
+			if err != nil {
+				return
+			}
+			entries := make(chan *zeroconf.ServiceEntry)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			
+			if err := resolver.Browse(ctx, "_clipcascade._tcp", "local.", entries); err == nil {
+				select {
+				case <-ctx.Done():
+				case entry := <-entries:
+					if entry != nil && len(entry.AddrIPv4) > 0 {
+						addr := fmt.Sprintf("http://%s:%d", entry.AddrIPv4[0], entry.Port)
+						// 确保在 UI 线程更新组件
+						serverEntry.SetText(addr)
+					}
+				}
+			}
+		}()
+	}
 
 	var connectBtn, disconnectBtn *widget.Button
 
@@ -57,22 +89,26 @@ func main() {
 		
 		go func() {
 			err := sess.Connect(serverEntry.Text, userEntry.Text, passEntry.Text, e2eCheck.Checked)
-			if err != nil {
-				statusLabel.SetText("Status: Disconnected")
-				connectBtn.Enable()
-				dialog.ShowError(err, w)
-			} else {
-				statusLabel.SetText("Status: Connected")
-				disconnectBtn.Enable()
-			}
+			fyne.Do(func() {
+				if err != nil {
+					statusLabel.SetText("Status: Disconnected")
+					connectBtn.Enable()
+					dialog.ShowError(err, w)
+				} else {
+					statusLabel.SetText("Status: Connected")
+					disconnectBtn.Enable()
+				}
+			})
 		}()
 	})
 
 	disconnectBtn = widget.NewButtonWithIcon("Disconnect", theme.LogoutIcon(), func() {
 		sess.Disconnect()
-		statusLabel.SetText("Status: Disconnected")
-		disconnectBtn.Disable()
-		connectBtn.Enable()
+		fyne.Do(func() {
+			statusLabel.SetText("Status: Disconnected")
+			disconnectBtn.Disable()
+			connectBtn.Enable()
+		})
 	})
 	disconnectBtn.Disable()
 

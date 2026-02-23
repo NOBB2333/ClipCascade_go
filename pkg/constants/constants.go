@@ -66,7 +66,7 @@ const (
 	// DefaultPort 是服务器默认监听的端口。
 	DefaultPort = 8080
 	// DefaultMaxMessageSizeMiB 是服务器处理的默认最大消息大小 (单位: MiB)。
-	DefaultMaxMessageSizeMiB = 1
+	DefaultMaxMessageSizeMiB = 10
 	// DefaultSessionTimeoutMin 是默认用户会话有效期 (约 1 年)。
 	DefaultSessionTimeoutMin = 525960
 	// DefaultMaxUniqueIPAttempts 是允许的同一 IP 对应的最大唯一 IP 尝试次数。

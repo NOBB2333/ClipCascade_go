@@ -51,15 +51,20 @@ func (s *Session) SendText(text string) {
 	}
 }
 
-// OnMessage is called by the Engine when a clipboard payload is received.
 func (s *Session) OnMessage(payload string, payloadType string) {
 	if payloadType == "text" {
-		log.Println("Received text payload from server. Writing to Fyne clipboard.")
-		s.lastCopied = payload
-		s.window.Clipboard().SetContent(payload)
-		
-		// Optional: Send a local system notification (requires Fyne's notification API)
-		s.app.SendNotification(fyne.NewNotification("ClipCascade Sync", "New text copied to clipboard!"))
+		fyne.Do(func() {
+			// 防止死循环：如果本地剪贴板已经是这个内容，则跳过
+			if s.window.Clipboard().Content() == payload || s.lastCopied == payload {
+				return
+			}
+			log.Println("Received new text payload from server. Writing to Fyne clipboard.")
+			s.lastCopied = payload
+			s.window.Clipboard().SetContent(payload)
+			
+			// Optional: Send a local system notification (requires Fyne's notification API)
+			s.app.SendNotification(fyne.NewNotification("ClipCascade Sync", "New text copied to clipboard!"))
+		})
 	} else {
 		log.Println("Received untested payload type:", payloadType)
 	}
@@ -68,7 +73,9 @@ func (s *Session) OnMessage(payload string, payloadType string) {
 // OnStatusChange is called by the Engine on disconnects/errors.
 func (s *Session) OnStatusChange(status string) {
 	log.Println("Engine status changed to:", status)
-	if status == "disconnected" || status == "error" {
-		s.app.SendNotification(fyne.NewNotification("ClipCascade", "Connection lost constraint"))
-	}
+	fyne.Do(func() {
+		if status == "disconnected" || status == "error" {
+			s.app.SendNotification(fyne.NewNotification("ClipCascade", "Connection lost constraint"))
+		}
+	})
 }

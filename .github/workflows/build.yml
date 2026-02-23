@@ -144,10 +144,106 @@ jobs:
             ${{ secrets.DOCKERHUB_USERNAME }}/clipcascade:latest
             ${{ secrets.DOCKERHUB_USERNAME }}/clipcascade:${{ github.ref_name }}
 
+  # ──────────────── Build Desktop UI (Fyne) ────────────────
+  build-desktop-ui:
+    name: Build Desktop UI (${{ matrix.os }})
+    needs: test
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - os: macos-arm64
+            runner: macos-14
+            goos: darwin
+            goarch: arm64
+          - os: windows-amd64
+            runner: ubuntu-latest # Docker fyne-cross on linux
+            goos: windows
+            goarch: amd64
+          - os: linux-amd64
+            runner: ubuntu-latest # Docker fyne-cross on linux
+            goos: linux
+            goarch: amd64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      # Mac 只需要本地原生构建
+      - name: Install Fyne dependencies (Mac)
+        if: matrix.goos == 'darwin'
+        run: |
+          go install fyne.io/tools/cmd/fyne@latest
+
+      - name: Build Mac UI
+        if: matrix.goos == 'darwin'
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          mkdir -p build
+          cd fyne_mobile
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          go build -ldflags="-s -w" -o ../build/clipcascade-ui-desktop-${{ matrix.goos }}-${{ matrix.goarch }} .
+
+      # Windows/Linux 需要借助 Docker fyne-cross 交叉构建
+      - name: Install fyne-cross (Linux/Windows docker)
+        if: matrix.goos != 'darwin'
+        run: |
+          go install github.com/fyne-io/fyne-cross@latest
+
+      - name: Build Windows/Linux cross UI
+        if: matrix.goos != 'darwin'
+        run: |
+          mkdir -p build
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          cd fyne_mobile
+          fyne-cross ${{ matrix.goos }} -arch=${{ matrix.goarch }} -app-id com.clipcascade.desktopui
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            mv fyne-cross/bin/windows-${{ matrix.goarch }}/fynemobile.exe ../build/clipcascade-ui-desktop-windows-${{ matrix.goarch }}.exe
+          else
+            mv fyne-cross/bin/linux-${{ matrix.goarch }}/fynemobile ../build/clipcascade-ui-desktop-linux-${{ matrix.goarch }}
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-ui-${{ matrix.os }}
+          path: build/clipcascade-ui-desktop-*
+
+  # ──────────────── Build Mobile (Android Fyne) ────────────────
+  build-mobile:
+    name: Build Mobile (Android)
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Setup Android NDK
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-multilib libgl1-mesa-dev xorg-dev
+      - name: Install Fyne CLI
+        run: |
+          go install fyne.io/tools/cmd/fyne@latest
+      - name: Build APK (fyne package)
+        run: |
+          mkdir -p build
+          cd fyne_mobile
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          fyne package -os android -app-id com.clipcascade.mobile -tags netgo -release
+          mv fynemobile.apk ../build/clipcascade-mobile.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mobile-android
+          path: build/clipcascade-mobile.apk
+
   # ──────────────── Release ────────────────
   release:
     name: Create Release
-    needs: [build-server, build-desktop]
+    needs: [build-server, build-desktop, build-desktop-ui, build-mobile]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:

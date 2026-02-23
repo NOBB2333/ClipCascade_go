@@ -168,11 +168,11 @@ build_desktop_ui_cross() {
     
     info "    → 编译中: windows/amd64 (UI 版)"
     fyne-cross windows -arch=amd64 -app-id com.clipcascade.desktopui || warn "⚠ Windows UI 构建失败 (请检查 Docker)"
-    mv fyne-cross/bin/windows-amd64/fynemobile.exe "$BUILD_DIR/clipcascade-ui-desktop-windows-amd64.exe" 2>/dev/null
+    mv fyne-cross/bin/windows-amd64/fynemobile.exe "$BUILD_DIR/clipcascade-ui-desktop-windows-amd64.exe" 2>/dev/null || true
     
     info "    → 编译中: linux/amd64 (UI 版)"
     fyne-cross linux -arch=amd64 -app-id com.clipcascade.desktopui || warn "⚠ Linux UI 构建失败"
-    mv fyne-cross/bin/linux-amd64/fynemobile "$BUILD_DIR/clipcascade-ui-desktop-linux-amd64" 2>/dev/null
+    mv fyne-cross/bin/linux-amd64/fynemobile "$BUILD_DIR/clipcascade-ui-desktop-linux-amd64" 2>/dev/null || true
     
     # 清理 Fyne Cross 临时目录
     rm -rf fyne-cross
@@ -201,9 +201,11 @@ build_mobile_ios() {
     check_fyne
     mkdir -p "$BUILD_DIR"
     cd "$ROOT_DIR/fyne_mobile"
-    fyne package -os ios -app-id com.clipcascade.mobile -release
-    mv ClipCascade.app "$BUILD_DIR/clipcascade-mobile.app" 2>/dev/null || warn "iOS App 文件生成但未能移动到 build 目录"
-    info "✅ iOS 构建成功 → $BUILD_DIR/clipcascade-mobile.app"
+    fyne package -os ios -app-id com.clipcascade.mobile -release || warn "⚠ iOS 构建失败: 缺少 Apple 开发者证书 (如需免签，请参阅 README 手动通过 Xcode 编译)"
+    mv ClipCascade.app "$BUILD_DIR/clipcascade-mobile.app" 2>/dev/null || true
+    if [ -d "$BUILD_DIR/clipcascade-mobile.app" ]; then
+        info "✅ iOS 构建成功 → $BUILD_DIR/clipcascade-mobile.app"
+    fi
     cd "$ROOT_DIR"
 }
 
@@ -250,6 +252,14 @@ show_help() {
 }
 
 # ─── 主流程 ───
+if [[ -d "/opt/homebrew/share/android-ndk" && -z "${ANDROID_NDK_HOME:-}" ]]; then
+    export ANDROID_NDK_HOME="/opt/homebrew/share/android-ndk"
+fi
+
+if [[ -d "/usr/local/share/android-ndk" && -z "${ANDROID_NDK_HOME:-}" ]]; then
+    export ANDROID_NDK_HOME="/usr/local/share/android-ndk"
+fi
+
 check_go
 [[ $# -eq 0 ]] && show_help && exit 0
 
@@ -264,7 +274,7 @@ for target in "$@"; do
         mobile-android)   build_mobile_android ;;
         mobile-ios)       build_mobile_ios ;;
         docker)           build_docker ;;
-        all)              build_server_cross; build_desktop_cross; build_desktop_ui; build_desktop_ui_cross; build_mobile_android; build_mobile_ios ;;
+        all)              build_server_cross; build_desktop_cross; build_desktop_ui; build_mobile_android; build_mobile_ios; build_desktop_ui_cross ;;
         tidy)           tidy ;;
         clean)          clean ;;
         *)              show_help; exit 1 ;;
