@@ -42,7 +42,9 @@ func (t *Tray) Quit() {
 }
 
 func (t *Tray) onReady() {
-	systray.SetTitle("ClipCascade")
+	systray.SetIcon(iconData)          // 显示我们刚刚嵌入的图标图片
+	// systray.SetTitle("ClipCascade") 
+	// 在 macOS 上，如果同时设置了 Title 和 Icon，那么 Title 的纯文本会强制覆盖掉精美的图标！所以留空以显示 Logo 
 	systray.SetTooltip("ClipCascade - Clipboard Sync")
 
 	t.statusItem = systray.AddMenuItem("Status: Disconnected", "")

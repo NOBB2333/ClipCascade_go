@@ -3,6 +3,7 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/clipcascade/pkg/constants"
@@ -36,6 +38,12 @@ type Application struct {
 	cancel     context.CancelFunc
 	encKey     []byte // 从 password 派生的 AES-256-GCM 密钥
 	reconnecting bool
+	connecting   bool // 防止用户重复点击连接产生并发泄漏
+	connMu       sync.Mutex
+
+	lastRecvMu   sync.Mutex
+	lastRecvHash string
+	lastRecvTime time.Time
 }
 
 // New 创建一个新的 Application 实例。
@@ -113,6 +121,21 @@ func (a *Application) discoverServer() (string, error) {
 
 // connect 执行 login → 获取加密密钥 → 启动 WebSocket → 开始剪贴板监控。
 func (a *Application) connect() {
+	a.connMu.Lock()
+	if a.connecting || (a.stomp != nil && a.stomp.IsConnected()) {
+		a.connMu.Unlock()
+		slog.Info("应用：已在连接中或已连接，忽略重复请求")
+		return
+	}
+	a.connecting = true
+	a.connMu.Unlock()
+
+	defer func() {
+		a.connMu.Lock()
+		a.connecting = false
+		a.connMu.Unlock()
+	}()
+
 	a.tray.SetStatus("Connecting...")
 
 	// 如果未配置 ServerURL，或者使用的是 localhost（可能被占用），尝试自动发现
@@ -246,15 +269,16 @@ func (a *Application) deriveEncryptionKey() error {
 }
 
 // onCopy 在本地剪贴板更改时被调用。发送到 server。
-func (a *Application) onCopy(payload string, payloadType string) {
+func (a *Application) onCopy(payload string, payloadType string, filename string) {
 	if a.stomp == nil || !a.stomp.IsConnected() {
 		return
 	}
 
 	// Build ClipboardData
 	clipData := &protocol.ClipboardData{
-		Payload: payload,
-		Type:    payloadType,
+		Payload:  payload,
+		Type:     payloadType,
+		FileName: filename,
 	}
 
 	// Encrypt if E2EE enabled
@@ -284,6 +308,20 @@ func (a *Application) onCopy(payload string, payloadType string) {
 
 // onReceive 当从 server 接收到剪贴板消息时被调用。
 func (a *Application) onReceive(body string) {
+	// 双通道并发跨线兜底消重 (针对 P2P 瞬间与 STOMP 服务器并发投递同一套 payload 的场景)
+	a.lastRecvMu.Lock()
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(body)))
+	now := time.Now()
+	// 如果在 5 秒内收到完全相同的加密/明文字符串，安全地认为是通道冗余并抛弃
+	if a.lastRecvHash == hash && now.Sub(a.lastRecvTime) < 5*time.Second {
+		a.lastRecvMu.Unlock()
+		slog.Debug("应用：静默丢弃重复荷载（P2P/STOMP 双通道并发兜底保护）")
+		return
+	}
+	a.lastRecvHash = hash
+	a.lastRecvTime = now
+	a.lastRecvMu.Unlock()
+
 	var clipData *protocol.ClipboardData
 
 	if a.cfg.E2EEEnabled && a.encKey != nil {
@@ -313,7 +351,7 @@ func (a *Application) onReceive(body string) {
 	}
 
 	// Paste to local clipboard
-	a.clip.Paste(clipData.Payload, clipData.Type)
+	a.clip.Paste(clipData.Payload, clipData.Type, clipData.FileName)
 	slog.Debug("应用：已接收并粘贴", "类型", clipData.Type, "大小", len(clipData.Payload))
 }
 

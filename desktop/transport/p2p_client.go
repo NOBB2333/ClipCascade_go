@@ -10,12 +10,13 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/google/uuid"
 	"github.com/pion/webrtc/v4"
 	"github.com/clipcascade/pkg/constants"
-	"github.com/clipcascade/pkg/protocol"
+	// "github.com/clipcascade/pkg/protocol" is now cleanly bypassed so the P2P layer won't falsely escape E2EE JSON blocks
 )
 
 // P2PClient 管理用于 P2P 剪贴板同步的 WebRTC peer 连接。
@@ -31,6 +32,7 @@ type P2PClient struct {
 	onReceive          func(data string)
 	receivingFragments map[string][]string // ID -> fragments
 	done               chan struct{}
+	wsMu               sync.Mutex          // 防止 Gorilla WebSocket 发生并发死写 panic
 }
 
 // NewP2PClient 创建一个连接到 signaling server 的 P2P client。
@@ -92,6 +94,15 @@ func (p *P2PClient) Send(data string) {
 		return
 	}
 
+
+	// P2P 专用分片包装结构 (不使用 protocol.ClipboardData 避免与应用层/E2EE 双重嵌套)
+	type p2pFragment struct {
+		Payload        string `json:"payload"`
+		ID             string `json:"id"`
+		Index          int    `json:"index"`
+		TotalFragments int    `json:"totalFragments"`
+	}
+
 	for i := 0; i < numFragments; i++ {
 		start := i * constants.FragmentSize
 		end := start + constants.FragmentSize
@@ -99,18 +110,14 @@ func (p *P2PClient) Send(data string) {
 			end = totalSize
 		}
 
-		clipData := &protocol.ClipboardData{
-			Payload: string(dataBytes[start:end]),
-			Type:    "text", // 默认类型，实际由调用者决定或在 body 中编码
-			Metadata: &protocol.FragmentMetadata{
-				ID:             fragmentID,
-				Index:          i,
-				TotalFragments: numFragments,
-				IsFragmented:   numFragments > 1,
-			},
+		frag := &p2pFragment{
+			Payload:        string(dataBytes[start:end]),
+			ID:             fragmentID,
+			Index:          i,
+			TotalFragments: numFragments,
 		}
 
-		encoded, _ := json.Marshal(clipData)
+		encoded, _ := json.Marshal(frag)
 
 		for sid, dc := range p.dataChans {
 			if dc.ReadyState() == webrtc.DataChannelStateOpen {
@@ -124,11 +131,13 @@ func (p *P2PClient) Send(data string) {
 
 // Close 关闭所有 peer 连接和 signaling。
 func (p *P2PClient) Close() {
+	p.mu.Lock()
 	select {
 	case <-p.done:
 	default:
 		close(p.done)
 	}
+	p.mu.Unlock()
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -202,7 +211,11 @@ func (p *P2PClient) handlePeerList(peers []string) {
 		_, exists := p.peers[peerID]
 		p.mu.Unlock()
 		if !exists {
-			go p.createOffer(peerID)
+			// WebRTC Glare 修复：使用字典序比较分配发起者/接受者身份
+			// 只有 sessionID 大的一方才发起提议，另一方静默等待被叫。
+			if p.sessionID > peerID {
+				go p.createOffer(peerID)
+			}
 		}
 	}
 }
@@ -283,7 +296,22 @@ func (p *P2PClient) handleICECandidate(from string, data json.RawMessage) {
 
 	var candidate webrtc.ICECandidateInit
 	json.Unmarshal(data, &candidate)
-	pc.AddICECandidate(candidate)
+
+	// WebRTC 竞争条件修复: 如果尚未设置 RemoteDescription，AddICECandidate 将因为 ufrag 错误而失败。
+	// 我们启动一个 goroutine 等待它被设置完成。
+	go func() {
+		for i := 0; i < 50; i++ {
+			if pc.RemoteDescription() != nil {
+				err := pc.AddICECandidate(candidate)
+				if err != nil {
+					slog.Warn("p2p: 添加 ICE candidate 失败", "错误", err)
+				}
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		slog.Warn("p2p: 等待 remote description 添加 ICE candidate 超时")
+	}()
 }
 
 // newPeerConnection 使用 STUN 配置创建一个新的 WebRTC PeerConnection。
@@ -338,34 +366,40 @@ func (p *P2PClient) setupDataChannel(peerID string, dc *webrtc.DataChannel) {
 		p.mu.Lock()
 		defer p.mu.Unlock()
 
-		var clipData protocol.ClipboardData
-		if err := json.Unmarshal(msg.Data, &clipData); err != nil {
-			// 如果不是 JSON，尝试作为原始数据处理
+		// P2P 专用分片包装结构
+		type p2pFragment struct {
+			Payload        string `json:"payload"`
+			ID             string `json:"id"`
+			Index          int    `json:"index"`
+			TotalFragments int    `json:"totalFragments"`
+		}
+
+		var frag p2pFragment
+		if err := json.Unmarshal(msg.Data, &frag); err != nil || frag.TotalFragments == 0 {
+			// 如果不是我们期望的分片 JSON 格式，尝试作为原始数据处理
 			if p.onReceive != nil {
 				p.onReceive(string(msg.Data))
 			}
 			return
 		}
 
-		if clipData.Metadata == nil || !clipData.Metadata.IsFragmented {
+		if frag.TotalFragments <= 1 {
+			// 单包直接透传原始数据
 			if p.onReceive != nil {
-				// 重新序列化为一致的格式发送给应用层
-				encoded, _ := json.Marshal(clipData)
-				p.onReceive(string(encoded))
+				p.onReceive(frag.Payload)
 			}
 			return
 		}
 
 		// 处理分片
-		meta := clipData.Metadata
-		if _, ok := p.receivingFragments[meta.ID]; !ok {
-			p.receivingFragments[meta.ID] = make([]string, meta.TotalFragments)
+		if _, ok := p.receivingFragments[frag.ID]; !ok {
+			p.receivingFragments[frag.ID] = make([]string, frag.TotalFragments)
 		}
-		p.receivingFragments[meta.ID][meta.Index] = clipData.Payload
+		p.receivingFragments[frag.ID][frag.Index] = frag.Payload
 
 		// 检查是否所有分片都已到达
 		complete := true
-		for _, f := range p.receivingFragments[meta.ID] {
+		for _, f := range p.receivingFragments[frag.ID] {
 			if f == "" {
 				complete = false
 				break
@@ -373,17 +407,12 @@ func (p *P2PClient) setupDataChannel(peerID string, dc *webrtc.DataChannel) {
 		}
 
 		if complete {
-			fullPayload := strings.Join(p.receivingFragments[meta.ID], "")
-			delete(p.receivingFragments, meta.ID)
+			// 组装完整的原生 payload (已由应用层加密/打包)，直接透传，切勿二次 json.Marshal!
+			fullPayload := strings.Join(p.receivingFragments[frag.ID], "")
+			delete(p.receivingFragments, frag.ID)
 
 			if p.onReceive != nil {
-				// 组装完整的 ClipboardData 并发送
-				recovered := &protocol.ClipboardData{
-					Payload: fullPayload,
-					Type:    clipData.Type,
-				}
-				encoded, _ := json.Marshal(recovered)
-				p.onReceive(string(encoded))
+				p.onReceive(fullPayload)
 			}
 		}
 	})
@@ -403,7 +432,12 @@ func (p *P2PClient) sendSignal(msgType, to string, data json.RawMessage) {
 		"to":   to,
 		"data": data,
 	})
-	p.wsConn.WriteMessage(websocket.TextMessage, msg)
+	
+	p.wsMu.Lock()
+	if p.wsConn != nil {
+		p.wsConn.WriteMessage(websocket.TextMessage, msg)
+	}
+	p.wsMu.Unlock()
 }
 
 func (p *P2PClient) buildWSURL() (string, error) {

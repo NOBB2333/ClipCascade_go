@@ -19,7 +19,9 @@ import (
 func main() {
 	a := app.NewWithID("com.clipcascade.mobile")
 	w := a.NewWindow("ClipCascade")
-	w.Resize(fyne.NewSize(400, 600))
+	// On mobile, Window.Resize is ignored since apps are forcibly fullscreen,
+	// but we set a logical starting size for desktop debugging.
+	w.Resize(fyne.NewSize(380, 600))
 
 	// The session manages the connection to the backend Engine
 	sess := NewSession(a, w)
@@ -128,23 +130,33 @@ func main() {
 		}
 	})
 
-	formContent := container.NewVBox(
-		title,
-		widget.NewCard("Configuration", "", container.NewVBox(
-			serverEntry,
-			userEntry,
-			passEntry,
-			e2eCheck,
-		)),
-		widget.NewCard("Connection", "", container.NewVBox(
-			statusLabel,
-			connectBtn,
-			disconnectBtn,
-		)),
-		widget.NewCard("Actions", "Manual Sync (Android 10+ requires App in foreground)", container.NewVBox(
-			syncBtn,
-		)),
-	)
+	titleContainer := container.NewCenter(title)
+
+	// 使用 Grid 确保输入框可以随屏幕宽度自动伸缩拉伸 (特别是在高分辨率及异形屏手机上)
+	configCard := widget.NewCard("配置", "", container.NewGridWithColumns(1,
+		serverEntry,
+		userEntry,
+		passEntry,
+		e2eCheck,
+	))
+
+	connCard := widget.NewCard("连接", "", container.NewGridWithColumns(1,
+		statusLabel,
+		connectBtn,
+		disconnectBtn,
+	))
+
+	actionCard := widget.NewCard("操作", "Android 10+ 手动同步需将应用保持在前台等待剪贴板读取", container.NewGridWithColumns(1,
+		syncBtn,
+	))
+
+	// 使用 VBox 组合所有的 Card 组件，并用 Padded 增加呼吸感和边距留白
+	formContent := container.NewPadded(container.NewVBox(
+		titleContainer,
+		configCard,
+		connCard,
+		actionCard,
+	))
 
 	w.SetContent(container.NewScroll(formContent))
 	

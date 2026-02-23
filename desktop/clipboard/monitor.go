@@ -4,7 +4,11 @@ package clipboard
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 
 	"golang.design/x/clipboard"
@@ -16,8 +20,7 @@ import (
 type Manager struct {
 	mu           sync.Mutex
 	lastHash     uint64
-	ignoreNext   bool // 用于跳过自身触发的更改的标记
-	onCopy       func(payload string, payloadType string)
+	onCopy       func(payload string, payloadType string, filename string)
 }
 
 // NewManager 创建一个新的剪贴板 Manager。
@@ -31,7 +34,7 @@ func (m *Manager) Init() error {
 }
 
 // OnCopy 设置剪贴板内容更改时的回调。
-func (m *Manager) OnCopy(fn func(payload string, payloadType string)) {
+func (m *Manager) OnCopy(fn func(payload string, payloadType string, filename string)) {
 	m.onCopy = fn
 }
 
@@ -52,58 +55,96 @@ func (m *Manager) Watch(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case data := <-textCh:
-				m.handleChange(string(data), "text")
+				m.handleChange(string(data), "text", "")
 			case data := <-imgCh:
-				m.handleChange(base64.StdEncoding.EncodeToString(data), "image")
+				m.handleChange(base64.StdEncoding.EncodeToString(data), "image", "")
 			}
 		}
 	}()
 }
 
 // handleChange 处理剪贴板更改事件。
-func (m *Manager) handleChange(payload string, payloadType string) {
+func (m *Manager) handleChange(payload string, payloadType string, filename string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if m.ignoreNext {
-		m.ignoreNext = false
-		return
-	}
-
-	// 使用 xxHash 检查内容是否确实发生了更改
+	// 统一使用 xxHash 检查内容是否确实发生实质性更改（防止自身 Paste 死循环）
 	hash := pkgcrypto.XXHash64(payload)
 	if hash == m.lastHash {
 		return
 	}
 	m.lastHash = hash
 
-	slog.Debug("clipboard: change detected", "type", payloadType, "size", len(payload))
+	if payloadType == "file_stub" {
+		paths := strings.Split(payload, "\n")
+		var totalSize int64
+		for _, p := range paths {
+			if info, err := os.Stat(p); err == nil && !info.IsDir() {
+				totalSize += info.Size()
+			}
+		}
+		sizeStr := fmt.Sprintf("%.2f MB", float64(totalSize)/(1024*1024))
+		slog.Debug("剪贴板：检测到本地大文件复制", "文件数", len(paths), "总大小", sizeStr, "首文件", paths[0])
+	} else if payloadType == "file_eager" {
+		slog.Debug("剪贴板：检测到本地小文件复制", "文件名", filename, "编码大小", fmt.Sprintf("%.2f MB", float64(len(payload)*3/4)/(1024*1024)))
+	} else {
+		slog.Debug("剪贴板：检测到更改", "类型", payloadType, "大小", len(payload))
+	}
 
 	if m.onCopy != nil {
-		m.onCopy(payload, payloadType)
+		m.onCopy(payload, payloadType, filename)
 	}
 }
 
-// Paste sets the clipboard content. Sets ignoreNext flag to avoid self-triggering.
-func (m *Manager) Paste(payload string, payloadType string) {
+// Paste sets the clipboard content. Updates lastHash to securely prevent self-trigger loop echoing.
+func (m *Manager) Paste(payload string, payloadType string, filename string) {
 	m.mu.Lock()
-	m.ignoreNext = true
 	m.lastHash = pkgcrypto.XXHash64(payload)
 	m.mu.Unlock()
 
 	switch payloadType {
 	case "text":
 		clipboard.Write(clipboard.FmtText, []byte(payload))
-		slog.Debug("clipboard: pasted text", "size", len(payload))
+		slog.Debug("剪贴板：已粘贴文本", "大小", len(payload))
 	case "image":
 		data, err := base64.StdEncoding.DecodeString(payload)
 		if err != nil {
-			slog.Warn("clipboard: failed to decode image", "error", err)
+			slog.Warn("剪贴板：无法解码图像", "错误", err)
 			return
 		}
 		clipboard.Write(clipboard.FmtImage, data)
-		slog.Debug("clipboard: pasted image", "size", len(data))
-	default:
-		slog.Warn("clipboard: unsupported type", "type", payloadType)
+		slog.Debug("剪贴板：已粘贴图像", "大小", len(data))
+	case "file_stub":
+		paths := strings.Split(payload, "\n")
+		firstPath := ""
+		if len(paths) > 0 {
+			firstPath = paths[0]
+		}
+		slog.Info("剪贴板：大文件拦截，仅接收路径占位符，跳过直传", "路径数", len(paths), "远程路径预览", firstPath)
+	case "file_eager":
+		data, err := base64.StdEncoding.DecodeString(payload)
+		if err != nil {
+			slog.Warn("剪贴板：无法解码小文件闪电直传数据", "错误", err)
+			return
+		}
+		
+		tempDir := filepath.Join(os.TempDir(), "ClipCascade")
+		os.MkdirAll(tempDir, 0755)
+		
+		safeName := filename
+		if safeName == "" {
+			safeName = "已下载文件"
+		}
+		
+		destPath := filepath.Join(tempDir, safeName)
+		if err := os.WriteFile(destPath, data, 0644); err != nil {
+			slog.Warn("剪贴板：无法将闪电直传文件保存到磁盘", "错误", err)
+			return
+		}
+		
+		slog.Info("剪贴板：已将闪电直传文件保存到本地磁盘", "路径", destPath)
+		setPlatformFilePaths([]string{destPath})
+	default:	
+		slog.Warn("剪贴板：不支持的数据类型", "类型", payloadType)
 	}
 }

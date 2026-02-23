@@ -18,6 +18,8 @@ type ClipboardData struct {
 	Payload string `json:"payload"`
 	// Type 表示内容类型："text"、"image"、"file_stub" (懒加载占位) 或 "file_request" (请求拉取真实文件流)。
 	Type string `json:"type"`
+	// FileName 保存用于小文件闪电直传的原始文件名。
+	FileName string `json:"filename,omitempty"`
 	// Metadata 包含分片信息（可选）。
 	Metadata *FragmentMetadata `json:"metadata,omitempty"`
 }
