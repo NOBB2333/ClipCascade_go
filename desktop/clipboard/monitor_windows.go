@@ -18,11 +18,15 @@ import (
 )
 
 var (
+	kernel32             = syscall.NewLazyDLL("kernel32.dll")
 	user32               = syscall.NewLazyDLL("user32.dll")
 	shell32              = syscall.NewLazyDLL("shell32.dll")
 	procOpenClipboard    = user32.NewProc("OpenClipboard")
 	procCloseClipboard   = user32.NewProc("CloseClipboard")
 	procGetClipboardData = user32.NewProc("GetClipboardData")
+	procIsClipboardFormatAvailable = user32.NewProc("IsClipboardFormatAvailable")
+	procGlobalLock       = kernel32.NewProc("GlobalLock")
+	procGlobalUnlock     = kernel32.NewProc("GlobalUnlock")
 	procDragQueryFileW   = shell32.NewProc("DragQueryFileW")
 )
 
@@ -36,13 +40,26 @@ func getPlatformFilePaths() ([]string, error) {
 	}
 	defer procCloseClipboard.Call()
 
+	// 再次确认格式，防止在大文件复制过程中剪贴板被释放
+	avail, _, _ := procIsClipboardFormatAvailable.Call(CF_HDROP)
+	if avail == 0 {
+		return nil, nil
+	}
+
 	hDrop, _, _ := procGetClipboardData.Call(CF_HDROP)
 	if hDrop == 0 {
 		return nil, nil // No files in clipboard
 	}
 
+	// 锁定内存，确保 hDrop 句柄在读取期间有效
+	ptr, _, _ := procGlobalLock.Call(hDrop)
+	if ptr == 0 {
+		return nil, nil
+	}
+	defer procGlobalUnlock.Call(hDrop)
+
 	count, _, _ := procDragQueryFileW.Call(hDrop, 0xFFFFFFFF, 0, 0)
-	if count == 0 {
+	if count == 0 || count > 1000 { // 增加一个合理的上限，防止恶意内存错误
 		return nil, nil
 	}
 
