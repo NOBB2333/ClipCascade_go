@@ -49,7 +49,7 @@ func (p *P2PSignaling) HandleP2P(c *websocket.Conn) {
 	p.sessions[username][c] = sessionID
 	p.mu.Unlock()
 
-	slog.Info("P2P：节点已连接", "用户名", username, "会话ID", sessionID)
+	slog.Info("P2P：节点已连接", "用户名", username, "会话ID", sessionID, "IP", c.RemoteAddr().String())
 
 	// 将 session ID 发送给新的 peer
 	initMsg, _ := json.Marshal(SignalMessage{
@@ -72,7 +72,7 @@ func (p *P2PSignaling) HandleP2P(c *websocket.Conn) {
 		p.mu.Unlock()
 		c.Close()
 		p.broadcastPeerList(username)
-		slog.Info("P2P：节点已断开", "用户名", username, "会话ID", sessionID)
+		slog.Info("P2P：节点已断开", "用户名", username, "会话ID", sessionID, "IP", c.RemoteAddr().String())
 	}()
 
 	for {

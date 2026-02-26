@@ -43,7 +43,7 @@ func (h *WSHub) Register(username string, conn *websocket.Conn) {
 	}
 	h.connections[username][conn] = true
 	h.totalConnections.Add(1)
-	slog.Info("WS：客户端已连接", "用户名", username, "当前活动连接数", len(h.connections[username]))
+	slog.Info("WS：客户端已连接", "用户名", username, "IP", conn.RemoteAddr().String(), "当前活动连接数", len(h.connections[username]))
 }
 
 // Unregister 为给定的 username 移除一个连接。
@@ -57,7 +57,7 @@ func (h *WSHub) Unregister(username string, conn *websocket.Conn) {
 			delete(h.connections, username)
 		}
 	}
-	slog.Info("WS：客户端已断开", "用户名", username)
+	slog.Info("WS：客户端已断开", "用户名", username, "IP", conn.RemoteAddr().String())
 }
 
 // Broadcast 向给定 user 的所有连接发送消息，但 sender 连接除外。

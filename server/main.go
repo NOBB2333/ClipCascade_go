@@ -251,7 +251,16 @@ func main() {
 	}
 
 	actualPort := ln.Addr().(*net.TCPAddr).Port
-	slog.Info("🚀 ClipCascade 服务正在启动", "addr", ln.Addr().String(), "port", actualPort)
+	slog.Info("🚀 ClipCascade 服务正在启动", "port", actualPort)
+
+	// 显示所有可用的本地 IP 地址
+	fmt.Printf("\n  ClipCascade Server v2 dev server running at:\n\n")
+	fmt.Printf("  ➜  Local:   http://localhost:%d/\n", actualPort)
+	ips := getLocalIPs()
+	for _, ip := range ips {
+		fmt.Printf("  ➜  Network: http://%s:%d/\n", ip, actualPort)
+	}
+	fmt.Printf("\n")
 
 	// 启动 mDNS 服务广播
 	serverName := fmt.Sprintf("ClipCascade-%d", actualPort)
@@ -313,5 +322,22 @@ func seedAdminUser(db *gorm.DB) {
 	})
 
 	slog.Info("✅ 默认管理员用户已创建 (admin / admin123)")
+}
+
+// getLocalIPs 返回所有非回环 IPv4 地址。
+func getLocalIPs() []string {
+	var ips []string
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return ips
+	}
+	for _, addr := range addrs {
+		if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+			if ipnet.IP.To4() != nil {
+				ips = append(ips, ipnet.IP.String())
+			}
+		}
+	}
+	return ips
 }
 

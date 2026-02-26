@@ -146,10 +146,37 @@ func (sc *StompClient) IsConnected() bool {
 
 // readLoop 读取传入的 STOMP MESSAGE 帧并调用 onMessage。
 func (sc *StompClient) readLoop() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	
 	defer func() {
 		sc.mu.Lock()
 		sc.subscribed = false
 		sc.mu.Unlock()
+		// 触发外部可能的重新连接逻辑 (通过关闭 conn 让其他地方检测到)
+		if sc.conn != nil {
+			sc.conn.Close()
+		}
+	}()
+
+	// 启动心跳写入器
+	go func() {
+		for {
+			select {
+			case <-sc.done:
+				return
+			case <-ticker.C:
+				sc.mu.Lock()
+				if sc.conn != nil {
+					// 发送 WebSocket Ping 帧作为应用层心跳
+					err := sc.conn.WriteMessage(websocket.PingMessage, nil)
+					if err != nil {
+						slog.Warn("stomp: heartbeat ping error", "error", err)
+					}
+				}
+				sc.mu.Unlock()
+			}
+		}
 	}()
 
 	for {
@@ -159,9 +186,11 @@ func (sc *StompClient) readLoop() {
 		default:
 		}
 
+		// 设置读取截止时间以防止死连接一直阻塞
+		sc.conn.SetReadDeadline(time.Now().Add(90 * time.Second))
 		_, msg, err := sc.conn.ReadMessage()
 		if err != nil {
-			slog.Warn("stomp: read error", "error", err)
+			slog.Warn("stomp: read error (connection might be lost)", "error", err)
 			return
 		}
 

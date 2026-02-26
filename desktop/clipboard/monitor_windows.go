@@ -134,17 +134,30 @@ func (m *Manager) startPlatformFileWatcher() {
 			
 			if len(paths) == 1 {
 				info, err := os.Stat(paths[0])
-				if err == nil && info.Size() < constants.DefaultMaxMessageSizeMiB*1024*1024 && !info.IsDir() {
-					data, err := os.ReadFile(paths[0])
-					if err == nil {
-						b64 := base64.StdEncoding.EncodeToString(data)
-						m.handleChange(b64, "file_eager", filepath.Base(paths[0]))
-						continue
+				// 严格检查：必须真实存在且不是目录。某些终端文本可能包含看起来像路径的内容，
+				// 但如果没有 os.Stat 确认，会被误判为 file_stub 导致对端触发大文件拦截提示。
+				if err == nil && !info.IsDir() {
+					if info.Size() < constants.DefaultMaxMessageSizeMiB*1024*1024 {
+						data, err := os.ReadFile(paths[0])
+						if err == nil {
+							b64 := base64.StdEncoding.EncodeToString(data)
+							m.handleChange(b64, "file_eager", filepath.Base(paths[0]))
+							continue
+						}
 					}
+					// 是真实存在的文件但太大，走占位符模式
+					m.handleChange(payload, "file_stub", "")
+					continue
+				}
+			} else if len(paths) > 1 {
+				// 多文件情况，至少检查第一个文件是否存在
+				if info, err := os.Stat(paths[0]); err == nil && !info.IsDir() {
+					m.handleChange(payload, "file_stub", "")
+					continue
 				}
 			}
 			
-			m.handleChange(payload, "file_stub", "")
+			// 如果路径不存在，说明这可能只是普通的终端文本或误报，不作为文件处理
 		}
 	}()
 }
