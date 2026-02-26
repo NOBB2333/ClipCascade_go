@@ -246,10 +246,30 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
-      - name: Setup Android NDK
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Install Android components
+        run: |
+          yes | sdkmanager --licenses
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "ndk;26.1.10909125"
+      - name: Setup Linux toolchain
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-multilib libgl1-mesa-dev xorg-dev
+      - name: Install gomobile
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          gomobile init
       - name: Install Fyne CLI
         run: |
           go install fyne.io/tools/cmd/fyne@latest
@@ -258,12 +278,15 @@ jobs:
           mkdir -p build
           cd fyne_mobile
           export PATH="$(go env GOPATH)/bin:$PATH"
+          export ANDROID_HOME="${ANDROID_SDK_ROOT}"
+          export ANDROID_NDK_HOME="${ANDROID_SDK_ROOT}/ndk/26.1.10909125"
           fyne package -os android/arm64 -app-id com.clipcascade.mobile -tags netgo -release
           mv fynemobile.apk ../build/clipcascade-mobile.apk
       - uses: actions/upload-artifact@v4
         with:
           name: mobile-android
           path: build/clipcascade-mobile.apk
+          if-no-files-found: error
 
   # ──────────────── Build Mobile (Android Native Keepalive) ────────────────
   build-mobile-native:
@@ -310,6 +333,7 @@ jobs:
             build/ClipCascade-Android-Debug.apk
             build/ClipCascade-Android-Installable.apk
             build/ClipCascade-Android-Release-Unsigned.apk
+          if-no-files-found: error
 
   # ──────────────── Release ────────────────
   release:
