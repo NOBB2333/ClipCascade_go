@@ -57,7 +57,7 @@ func main() {
 			entries := make(chan *zeroconf.ServiceEntry)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			
+
 			if err := resolver.Browse(ctx, "_clipcascade._tcp", "local.", entries); err == nil {
 				select {
 				case <-ctx.Done():
@@ -74,7 +74,40 @@ func main() {
 
 	var connectBtn, disconnectBtn *widget.Button
 
+	applyConnectionState := func(state string) {
+		switch state {
+		case "connecting":
+			statusLabel.SetText("Status: Connecting...")
+			connectBtn.Disable()
+			disconnectBtn.Disable()
+		case "connected":
+			statusLabel.SetText("Status: Connected")
+			connectBtn.Disable()
+			disconnectBtn.Enable()
+		case "disconnecting":
+			statusLabel.SetText("Status: Disconnecting...")
+			connectBtn.Disable()
+			disconnectBtn.Disable()
+		case "reconnecting":
+			statusLabel.SetText("Status: Reconnecting...")
+			connectBtn.Disable()
+			disconnectBtn.Disable()
+		case "error":
+			statusLabel.SetText("Status: Error")
+			connectBtn.Enable()
+			disconnectBtn.Disable()
+		default:
+			statusLabel.SetText("Status: Disconnected")
+			connectBtn.Enable()
+			disconnectBtn.Disable()
+		}
+	}
+
 	connectBtn = widget.NewButtonWithIcon("Connect", theme.LoginIcon(), func() {
+		currentState := sess.Status()
+		if currentState == "connecting" || currentState == "connected" || currentState == "reconnecting" {
+			return
+		}
 		if serverEntry.Text == "" || userEntry.Text == "" {
 			dialog.ShowInformation("Error", "Please enter server URL and credentials", w)
 			return
@@ -86,33 +119,23 @@ func main() {
 		a.Preferences().SetString("Password", passEntry.Text)
 		a.Preferences().SetBool("E2EE", e2eCheck.Checked)
 
-		statusLabel.SetText("Status: Connecting...")
-		connectBtn.Disable()
-		
 		go func() {
 			err := sess.Connect(serverEntry.Text, userEntry.Text, passEntry.Text, e2eCheck.Checked)
 			fyne.Do(func() {
 				if err != nil {
-					statusLabel.SetText("Status: Disconnected")
-					connectBtn.Enable()
 					dialog.ShowError(err, w)
-				} else {
-					statusLabel.SetText("Status: Connected")
-					disconnectBtn.Enable()
 				}
 			})
 		}()
 	})
 
 	disconnectBtn = widget.NewButtonWithIcon("Disconnect", theme.LogoutIcon(), func() {
-		sess.Disconnect()
-		fyne.Do(func() {
-			statusLabel.SetText("Status: Disconnected")
-			disconnectBtn.Disable()
-			connectBtn.Enable()
-		})
+		currentState := sess.Status()
+		if currentState != "connected" && currentState != "reconnecting" {
+			return
+		}
+		go sess.Disconnect()
 	})
-	disconnectBtn.Disable()
 
 	// Sync clipboard button directly fetches from the OS and sends it
 	syncBtn := widget.NewButtonWithIcon("Send OS Clipboard", theme.ContentCopyIcon(), func() {
@@ -146,7 +169,10 @@ func main() {
 		disconnectBtn,
 	))
 
-	actionCard := widget.NewCard("操作", "Android 10+ 手动同步需将应用保持在前台等待剪贴板读取", container.NewGridWithColumns(1,
+	actionHint := widget.NewLabel("Android 10+ 手动同步时，请将应用保持在前台等待剪贴板读取。")
+	actionHint.Wrapping = fyne.TextWrapWord
+	actionCard := widget.NewCard("操作", "", container.NewGridWithColumns(1,
+		actionHint,
 		syncBtn,
 	))
 
@@ -158,8 +184,14 @@ func main() {
 		actionCard,
 	))
 
-	w.SetContent(container.NewScroll(formContent))
-	
+	w.SetContent(container.NewVScroll(formContent))
+
+	sess.SetStatusListener(func(state string) {
+		fyne.Do(func() {
+			applyConnectionState(state)
+		})
+	})
+
 	// Fyne mobile lifecycle triggers
 	a.Lifecycle().SetOnEnteredForeground(func() {
 		// When app comes to foreground, we could auto-sync if connected
@@ -168,6 +200,12 @@ func main() {
 			if content != "" && content != sess.lastCopied {
 				sess.SendText(content)
 			}
+		}
+	})
+	a.Lifecycle().SetOnExitedForeground(func() {
+		state := sess.Status()
+		if sess.IsConnected() || state == "connecting" || state == "reconnecting" {
+			go sess.Disconnect()
 		}
 	})
 

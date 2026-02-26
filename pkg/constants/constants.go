@@ -52,8 +52,12 @@ const (
 
 	// --- 剪贴板内容类型 ---
 
-	TypeText  = "text"
-	TypeImage = "image"
+	TypeText        = "text"
+	TypeImage       = "image"
+	TypeFileStub    = "file_stub"
+	TypeFileEager   = "file_eager"
+	TypeFileRequest = "file_request"
+	// TypeFiles 保留兼容旧代码，建议使用 TypeFileStub。
 	TypeFiles = "files"
 
 	// --- P2P 分片配置 ---

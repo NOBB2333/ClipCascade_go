@@ -44,17 +44,20 @@ desktop-all:
 	cd desktop && GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o ../$(OUT)/clipcascade-desktop-windows-amd64.exe .
 	@echo "✅ Desktop cross-compile complete"
 
-# --- Mobile ---
+# --- Mobile (Hybrid Architecture) ---
 mobile-android:
-	@echo "🔧 Building Android .aar..."
-	@mkdir -p $(OUT)
-	gomobile bind -target=android -o $(OUT)/mobile.aar ./mobile/bridge/
-	@echo "✅ Android: $(OUT)/mobile.aar"
+	@echo "🔧 Building Go Engine AAR..."
+	@mkdir -p mobile/android/app/libs $(OUT)
+	gomobile bind -target=android -o mobile/android/app/libs/engine.aar ./fyne_mobile/engine
+	@echo "🔧 Building Android APK via Gradle..."
+	cd mobile/android && ./gradlew assembleRelease
+	cp mobile/android/app/build/outputs/apk/release/app-release-unsigned.apk $(OUT)/ClipCascade-Android-Release-Unsigned.apk
+	@echo "✅ Android APK: $(OUT)/ClipCascade-Android-Release-Unsigned.apk"
 
 mobile-ios:
 	@echo "🔧 Building iOS .xcframework..."
 	@mkdir -p $(OUT)
-	gomobile bind -target=ios -o $(OUT)/Mobile.xcframework ./mobile/bridge/
+	gomobile bind -target=ios -o $(OUT)/Mobile.xcframework ./fyne_mobile/engine
 	@echo "✅ iOS: $(OUT)/Mobile.xcframework"
 
 # --- Docker ---
@@ -75,13 +78,14 @@ tidy:
 	cd pkg && go mod tidy
 	cd server && go mod tidy
 	cd desktop && go mod tidy
-	cd mobile && go mod tidy
+	cd fyne_mobile && go mod tidy
 
 test:
 	go test ./pkg/... ./server/... ./desktop/...
 
 clean:
 	rm -rf $(OUT) server/database/
+	cd mobile/android && ./gradlew clean || true
 
 fmt:
-	gofmt -w pkg/ server/ desktop/ mobile/
+	gofmt -w pkg/ server/ desktop/ fyne_mobile/

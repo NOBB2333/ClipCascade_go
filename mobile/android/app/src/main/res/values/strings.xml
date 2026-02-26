@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ClipCascade</string>
+    <string name="accessibility_service_description">用于在后台检测系统复制、剪贴行为，从而触发 ClipCascade 进行跨设备剪贴板同步。我们承诺不会收集您的隐私数据。</string>
+    
+    <!-- Notification strings -->
+    <string name="notification_channel_name">剪贴板同步服务</string>
+    <string name="notification_title">ClipCascade 同步运行中</string>
+    <string name="notification_desc_connected">已连接服务器，轻触打开面板</string>
+    <string name="notification_desc_disconnected">已断开连接，正在重连...</string>
+</resources>

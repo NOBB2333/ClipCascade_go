@@ -37,6 +37,12 @@
             margin-bottom: 24px;
         }
 
+        .toolbar {
+            display: flex;
+            justify-content: flex-end;
+            margin-bottom: 12px;
+        }
+
         table {
             width: 100%;
             border-collapse: collapse;
@@ -152,6 +158,9 @@
 <body>
     <div class="container">
         <h1>⚙️ Admin Panel</h1>
+        <div class="toolbar">
+            <button class="btn" onclick="openCreateUser()">+ Add User</button>
+        </div>
         <div class="stats" id="stats"></div>
         <table>
             <thead>
@@ -173,6 +182,14 @@
         <input type="password" id="newPassword" placeholder="New password (min 4 chars)">
         <button class="btn" onclick="doReset()">Update</button>
         <button class="btn" onclick="document.getElementById('resetDialog').close()"
+            style="margin-top:8px;background:transparent">Cancel</button>
+    </dialog>
+    <dialog id="createDialog">
+        <h3 style="margin-bottom:8px">Create User</h3>
+        <input type="text" id="createUsername" placeholder="Username">
+        <input type="password" id="createPassword" placeholder="Password (min 4 chars)">
+        <button class="btn" onclick="doCreateUser()">Create</button>
+        <button class="btn" onclick="document.getElementById('createDialog').close()"
             style="margin-top:8px;background:transparent">Cancel</button>
     </dialog>
 
@@ -223,6 +240,32 @@
             if (!confirm(`Delete user "${name}"?`)) return;
             await fetch(`/api/admin/users/${id}`, { method: 'DELETE' });
             loadUsers();
+        }
+
+        function openCreateUser() {
+            document.getElementById('createDialog').showModal();
+        }
+
+        async function doCreateUser() {
+            const username = document.getElementById('createUsername').value.trim();
+            const password = document.getElementById('createPassword').value;
+            if (!username || password.length < 4) {
+                return alert('Username required, password min 4 chars');
+            }
+            const res = await fetch('/api/admin/users', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password })
+            });
+            const result = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                return alert(result.error || 'Create user failed');
+            }
+            document.getElementById('createDialog').close();
+            document.getElementById('createUsername').value = '';
+            document.getElementById('createPassword').value = '';
+            loadUsers();
+            loadStats();
         }
 
         loadStats(); loadUsers();

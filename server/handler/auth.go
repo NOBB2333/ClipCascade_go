@@ -28,8 +28,9 @@ func NewAuthHandler(db *gorm.DB, cfg *config.Config, bfa *middleware.BruteForceP
 // LoginPage 渲染 login 页面。
 func (h *AuthHandler) LoginPage(c *fiber.Ctx) error {
 	return c.Render("web/templates/login", fiber.Map{
-		"error":  c.Query("error"),
-		"logout": c.Query("logout"),
+		"error":          c.Query("error"),
+		"logout":         c.Query("logout"),
+		"signup_enabled": h.Config.SignupEnabled,
 	})
 }
 
@@ -57,6 +58,13 @@ func (h *AuthHandler) LoginPost(c *fiber.Ctx) error {
 			h.BFA.RecordFailure(c.IP())
 		}
 		return c.Redirect("/login?error=invalid")
+	}
+	if !user.Enabled {
+		slog.Warn("登录失败：用户被禁用", "用户名", username)
+		if h.BFA != nil {
+			h.BFA.RecordFailure(c.IP())
+		}
+		return c.Redirect("/login?error=disabled")
 	}
 
 	if h.BFA != nil {

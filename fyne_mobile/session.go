@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"sync"
 
 	"fyne.io/fyne/v2"
 	"github.com/clipcascade/fynemobile/engine"
@@ -9,42 +10,107 @@ import (
 
 // Session wraps the STOMP/P2P Engine and handles Fyne UI callbacks.
 type Session struct {
-	app        fyne.App
-	window     fyne.Window
-	engine     *engine.Engine
-	lastCopied string
+	app            fyne.App
+	window         fyne.Window
+	engine         *engine.Engine
+	lastCopied     string
+	mu             sync.RWMutex
+	status         string
+	statusListener func(string)
 }
 
 func NewSession(app fyne.App, w fyne.Window) *Session {
 	return &Session{
 		app:    app,
 		window: w,
+		status: "disconnected",
+	}
+}
+
+func (s *Session) SetStatusListener(listener func(string)) {
+	s.mu.Lock()
+	s.statusListener = listener
+	current := s.status
+	s.mu.Unlock()
+
+	if listener != nil {
+		listener(current)
+	}
+}
+
+func (s *Session) Status() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.status
+}
+
+func (s *Session) setStatus(status string) {
+	s.mu.Lock()
+	s.status = status
+	listener := s.statusListener
+	s.mu.Unlock()
+
+	if listener != nil {
+		listener(status)
 	}
 }
 
 // Connect initializes the Engine and starts the connection.
 func (s *Session) Connect(serverURL, username, password string, e2ee bool) error {
-	s.engine = engine.NewEngine(serverURL, username, password, e2ee)
-	s.engine.SetCallback(s)
-	
-	return s.engine.Start()
+	s.setStatus("connecting")
+
+	newEngine := engine.NewEngine(serverURL, username, password, e2ee)
+	newEngine.SetCallback(s)
+
+	s.mu.Lock()
+	s.engine = newEngine
+	s.mu.Unlock()
+
+	if err := newEngine.Start(); err != nil {
+		s.setStatus("disconnected")
+		return err
+	}
+
+	s.setStatus("connected")
+	return nil
 }
 
 // Disconnect stops the engine.
 func (s *Session) Disconnect() {
-	if s.engine != nil {
-		s.engine.Stop()
+	s.setStatus("disconnecting")
+
+	s.mu.Lock()
+	currentEngine := s.engine
+	s.engine = nil
+	s.mu.Unlock()
+
+	if currentEngine != nil {
+		currentEngine.Stop()
 	}
+
+	s.setStatus("disconnected")
 }
 
 func (s *Session) IsConnected() bool {
-	return s.engine != nil && s.engine.IsConnected()
+	s.mu.RLock()
+	currentEngine := s.engine
+	state := s.status
+	s.mu.RUnlock()
+
+	if state != "connected" && state != "reconnecting" {
+		return false
+	}
+	return currentEngine != nil && currentEngine.IsConnected()
 }
 
 func (s *Session) SendText(text string) {
-	if s.engine != nil {
+	s.mu.RLock()
+	currentEngine := s.engine
+	s.mu.RUnlock()
+
+	if currentEngine != nil {
 		s.lastCopied = text
-		err := s.engine.SendClipboard(text, "text")
+		err := currentEngine.SendClipboard(text, "text")
 		if err != nil {
 			log.Println("Send failed:", err)
 		}
@@ -61,7 +127,7 @@ func (s *Session) OnMessage(payload string, payloadType string) {
 			log.Println("Received new text payload from server. Writing to Fyne clipboard.")
 			s.lastCopied = payload
 			s.window.Clipboard().SetContent(payload)
-			
+
 			// Optional: Send a local system notification (requires Fyne's notification API)
 			s.app.SendNotification(fyne.NewNotification("ClipCascade Sync", "New text copied to clipboard!"))
 		})
@@ -73,6 +139,8 @@ func (s *Session) OnMessage(payload string, payloadType string) {
 // OnStatusChange is called by the Engine on disconnects/errors.
 func (s *Session) OnStatusChange(status string) {
 	log.Println("Engine status changed to:", status)
+	s.setStatus(status)
+
 	fyne.Do(func() {
 		if status == "disconnected" || status == "error" {
 			s.app.SendNotification(fyne.NewNotification("ClipCascade", "Connection lost constraint"))

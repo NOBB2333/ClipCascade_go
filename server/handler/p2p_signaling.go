@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"log/slog"
 	"sync"
@@ -13,12 +15,15 @@ import (
 type P2PSignaling struct {
 	mu       sync.RWMutex
 	sessions map[string]map[*websocket.Conn]string // username → {conn → sessionID}
+	// writeLocks 避免同一连接并发写。
+	writeLocks map[*websocket.Conn]*sync.Mutex
 }
 
 // NewP2PSignaling 创建一个新的 P2P signaling handler。
 func NewP2PSignaling() *P2PSignaling {
 	return &P2PSignaling{
-		sessions: make(map[string]map[*websocket.Conn]string),
+		sessions:   make(map[string]map[*websocket.Conn]string),
+		writeLocks: make(map[*websocket.Conn]*sync.Mutex),
 	}
 }
 
@@ -47,6 +52,7 @@ func (p *P2PSignaling) HandleP2P(c *websocket.Conn) {
 		p.sessions[username] = make(map[*websocket.Conn]string)
 	}
 	p.sessions[username][c] = sessionID
+	p.writeLocks[c] = &sync.Mutex{}
 	p.mu.Unlock()
 
 	slog.Info("P2P：节点已连接", "用户名", username, "会话ID", sessionID, "IP", c.RemoteAddr().String())
@@ -69,6 +75,7 @@ func (p *P2PSignaling) HandleP2P(c *websocket.Conn) {
 				delete(p.sessions, username)
 			}
 		}
+		delete(p.writeLocks, c)
 		p.mu.Unlock()
 		c.Close()
 		p.broadcastPeerList(username)
@@ -96,29 +103,52 @@ func (p *P2PSignaling) HandleP2P(c *websocket.Conn) {
 // routeMessage 将 signal 发送到目标 peer 或广播到所有 peers。
 func (p *P2PSignaling) routeMessage(username string, sender *websocket.Conn, signal *SignalMessage) {
 	p.mu.RLock()
-	defer p.mu.RUnlock()
-
 	conns, ok := p.sessions[username]
 	if !ok {
+		p.mu.RUnlock()
 		return
 	}
 
+	type target struct {
+		conn *websocket.Conn
+		mu   *sync.Mutex
+	}
+	targets := make([]target, 0, len(conns))
 	data, _ := json.Marshal(signal)
 
 	if signal.To != "" {
 		// 定向消息：查找特定的 peer
 		for conn, sid := range conns {
 			if sid == signal.To && conn != sender {
-				conn.WriteMessage(websocket.TextMessage, data)
-				return
+				targets = append(targets, target{
+					conn: conn,
+					mu:   p.writeLocks[conn],
+				})
+				break
 			}
 		}
 	} else {
 		// 广播给除 sender 外的所有 peers
 		for conn := range conns {
 			if conn != sender {
-				conn.WriteMessage(websocket.TextMessage, data)
+				targets = append(targets, target{
+					conn: conn,
+					mu:   p.writeLocks[conn],
+				})
 			}
+		}
+	}
+	p.mu.RUnlock()
+
+	for _, t := range targets {
+		if t.mu == nil {
+			continue
+		}
+		t.mu.Lock()
+		err := t.conn.WriteMessage(websocket.TextMessage, data)
+		t.mu.Unlock()
+		if err != nil {
+			slog.Warn("P2P：写入信令失败", "错误", err)
 		}
 	}
 }
@@ -126,10 +156,9 @@ func (p *P2PSignaling) routeMessage(username string, sender *websocket.Conn, sig
 // broadcastPeerList 将当前 peer session ID 列表发送给一个 user 的所有 peers。
 func (p *P2PSignaling) broadcastPeerList(username string) {
 	p.mu.RLock()
-	defer p.mu.RUnlock()
-
 	conns, ok := p.sessions[username]
 	if !ok {
+		p.mu.RUnlock()
 		return
 	}
 
@@ -145,8 +174,29 @@ func (p *P2PSignaling) broadcastPeerList(username string) {
 		Data: peersJSON,
 	})
 
+	type target struct {
+		conn *websocket.Conn
+		mu   *sync.Mutex
+	}
+	targets := make([]target, 0, len(conns))
 	for conn := range conns {
-		conn.WriteMessage(websocket.TextMessage, msg)
+		targets = append(targets, target{
+			conn: conn,
+			mu:   p.writeLocks[conn],
+		})
+	}
+	p.mu.RUnlock()
+
+	for _, t := range targets {
+		if t.mu == nil {
+			continue
+		}
+		t.mu.Lock()
+		err := t.conn.WriteMessage(websocket.TextMessage, msg)
+		t.mu.Unlock()
+		if err != nil {
+			slog.Warn("P2P：广播 peer-list 失败", "错误", err)
+		}
 	}
 }
 
@@ -165,21 +215,11 @@ func (p *P2PSignaling) Stats() map[string]int {
 	}
 }
 
-var sessionCounter uint64
-var sessionMu sync.Mutex
-
 func generateSessionID() string {
-	sessionMu.Lock()
-	defer sessionMu.Unlock()
-	sessionCounter++
-	return "peer-" + json.Number(json.Number(string(rune('0'+sessionCounter%10)))).String() + "-" + randomHex(8)
-}
-
-func randomHex(n int) string {
-	const hex = "0123456789abcdef"
-	b := make([]byte, n)
-	for i := range b {
-		b[i] = hex[i%len(hex)]
+	// 12 bytes => 24 hex chars，足够用于会话标识且不可预测。
+	b := make([]byte, 12)
+	if _, err := rand.Read(b); err != nil {
+		return "peer-fallback"
 	}
-	return string(b)
+	return "peer-" + hex.EncodeToString(b)
 }

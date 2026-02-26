@@ -16,7 +16,7 @@ type FragmentMetadata struct {
 type ClipboardData struct {
 	// Payload 是剪贴板内容，对于图像/文件，通常是 base64 编码的或者是文件路径列表。
 	Payload string `json:"payload"`
-	// Type 表示内容类型："text"、"image"、"file_stub" (懒加载占位) 或 "file_request" (请求拉取真实文件流)。
+	// Type 表示内容类型："text"、"image"、"file_stub"(懒加载占位)、"file_eager"(旧版兼容) 或 "file_request"。
 	Type string `json:"type"`
 	// FileName 保存用于小文件闪电直传的原始文件名。
 	FileName string `json:"filename,omitempty"`

@@ -21,6 +21,7 @@ type StompClient struct {
 	cookies      []*http.Cookie
 	conn         *websocket.Conn
 	mu           sync.Mutex
+	writeMu      sync.Mutex
 	done         chan struct{}
 	onMessage    func(body string) // 接收到的剪贴板数据的回调
 	subscribed   bool
@@ -106,35 +107,36 @@ func (sc *StompClient) Connect() error {
 // Send 通过 STOMP SEND 帧向 server 发送剪贴板数据。
 func (sc *StompClient) Send(body string) error {
 	sc.mu.Lock()
-	defer sc.mu.Unlock()
-
-	if sc.conn == nil {
+	conn := sc.conn
+	sc.mu.Unlock()
+	if conn == nil {
 		return fmt.Errorf("not connected")
 	}
 
 	sendFrame := protocol.SendFrame("/app/cliptext", body)
-	return sc.conn.WriteMessage(websocket.TextMessage, sendFrame.Encode())
+	return sc.writeMessage(conn, websocket.TextMessage, sendFrame.Encode())
 }
 
 // Close 优雅地断开连接。
 func (sc *StompClient) Close() {
 	sc.mu.Lock()
-	defer sc.mu.Unlock()
-
 	select {
 	case <-sc.done:
 	default:
 		close(sc.done)
 	}
 
-	if sc.conn != nil {
+	conn := sc.conn
+	sc.conn = nil
+	sc.subscribed = false
+	sc.mu.Unlock()
+
+	if conn != nil {
 		// 发送 STOMP DISCONNECT
 		disc := protocol.NewFrame("DISCONNECT")
-		_ = sc.conn.WriteMessage(websocket.TextMessage, disc.Encode())
-		sc.conn.Close()
-		sc.conn = nil
+		_ = sc.writeMessage(conn, websocket.TextMessage, disc.Encode())
+		conn.Close()
 	}
-	sc.subscribed = false
 }
 
 // IsConnected 如果已连接并订阅，则返回 true。
@@ -146,35 +148,62 @@ func (sc *StompClient) IsConnected() bool {
 
 // readLoop 读取传入的 STOMP MESSAGE 帧并调用 onMessage。
 func (sc *StompClient) readLoop() {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-	
+	const heartbeatInterval = 30 * time.Second
+	const readTimeout = 120 * time.Second // 读超时应大于心跳周期
+
+	heartbeatDone := make(chan struct{})
+	defer close(heartbeatDone)
+
+	sc.mu.Lock()
+	conn := sc.conn
+	sc.mu.Unlock()
+	if conn == nil {
+		return
+	}
+
+	conn.SetReadDeadline(time.Now().Add(readTimeout))
+
+	// 设置 Pong 回调：收到服务端响应时重置读超时
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(readTimeout))
+		return nil
+	})
+
 	defer func() {
 		sc.mu.Lock()
 		sc.subscribed = false
+		if sc.conn == conn {
+			sc.conn = nil
+		}
 		sc.mu.Unlock()
-		// 触发外部可能的重新连接逻辑 (通过关闭 conn 让其他地方检测到)
-		if sc.conn != nil {
-			sc.conn.Close()
+		if conn != nil {
+			conn.Close()
 		}
 	}()
 
 	// 启动心跳写入器
 	go func() {
+		ticker := time.NewTicker(heartbeatInterval)
+		defer ticker.Stop()
 		for {
 			select {
 			case <-sc.done:
 				return
+			case <-heartbeatDone:
+				return
 			case <-ticker.C:
 				sc.mu.Lock()
-				if sc.conn != nil {
-					// 发送 WebSocket Ping 帧作为应用层心跳
-					err := sc.conn.WriteMessage(websocket.PingMessage, nil)
-					if err != nil {
-						slog.Warn("stomp: heartbeat ping error", "error", err)
-					}
-				}
+				connClosed := sc.conn != conn || sc.conn == nil
 				sc.mu.Unlock()
+				if connClosed {
+					return
+				}
+				// 发送 WebSocket Ping 帧作为应用层心跳
+				// 此操作将触发服务端的自动 Pong 回复
+				err := sc.writeMessage(conn, websocket.PingMessage, nil)
+				if err != nil {
+					slog.Warn("stomp: heartbeat ping error", "error", err)
+				}
 			}
 		}
 	}()
@@ -186,13 +215,14 @@ func (sc *StompClient) readLoop() {
 		default:
 		}
 
-		// 设置读取截止时间以防止死连接一直阻塞
-		sc.conn.SetReadDeadline(time.Now().Add(90 * time.Second))
-		_, msg, err := sc.conn.ReadMessage()
+		_, msg, err := conn.ReadMessage()
 		if err != nil {
 			slog.Warn("stomp: read error (connection might be lost)", "error", err)
 			return
 		}
+
+		// 每次收到有效 STOMP 帧也重置读超时
+		conn.SetReadDeadline(time.Now().Add(readTimeout))
 
 		frame, err := protocol.ParseFrame(msg)
 		if err != nil {
@@ -204,6 +234,12 @@ func (sc *StompClient) readLoop() {
 			sc.onMessage(frame.Body)
 		}
 	}
+}
+
+func (sc *StompClient) writeMessage(conn *websocket.Conn, msgType int, data []byte) error {
+	sc.writeMu.Lock()
+	defer sc.writeMu.Unlock()
+	return conn.WriteMessage(msgType, data)
 }
 
 // buildWSURL 将 http(s)://host:port 转换为 ws(s)://host:port/clipsocket

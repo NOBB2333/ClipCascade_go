@@ -18,6 +18,7 @@ import (
 	"github.com/clipcascade/pkg/constants"
 	pkgcrypto "github.com/clipcascade/pkg/crypto"
 	"github.com/clipcascade/pkg/protocol"
+	"github.com/clipcascade/pkg/sizefmt"
 
 	"github.com/clipcascade/desktop/clipboard"
 	"github.com/clipcascade/desktop/config"
@@ -28,15 +29,15 @@ import (
 
 // Application 是主要的 desktop client 控制器。
 type Application struct {
-	cfg        *config.Config
-	httpClient *http.Client
-	stomp      *transport.StompClient
-	p2p        *transport.P2PClient
-	clip       *clipboard.Manager
-	tray       *ui.Tray
-	ctx        context.Context
-	cancel     context.CancelFunc
-	encKey     []byte // 从 password 派生的 AES-256-GCM 密钥
+	cfg          *config.Config
+	httpClient   *http.Client
+	stomp        *transport.StompClient
+	p2p          *transport.P2PClient
+	clip         *clipboard.Manager
+	tray         *ui.Tray
+	ctx          context.Context
+	cancel       context.CancelFunc
+	encKey       []byte // 从 password 派生的 AES-256-GCM 密钥
 	reconnecting bool
 	connecting   bool // 防止用户重复点击连接产生并发泄漏
 	connMu       sync.Mutex
@@ -51,11 +52,11 @@ func New(cfg *config.Config) *Application {
 	ctx, cancel := context.WithCancel(context.Background())
 	jar, _ := cookiejar.New(nil)
 
-	return &Application{
-		cfg:  cfg,
-		clip: clipboard.NewManager(),
-		tray: ui.NewTray(),
-		ctx:  ctx,
+	app := &Application{
+		cfg:    cfg,
+		clip:   clipboard.NewManager(),
+		tray:   ui.NewTray(),
+		ctx:    ctx,
 		cancel: cancel,
 		httpClient: &http.Client{
 			Jar:     jar,
@@ -65,6 +66,8 @@ func New(cfg *config.Config) *Application {
 			},
 		},
 	}
+	app.clip.SetNotifier(ui.Notify)
+	return app
 }
 
 // Run 启动 application。在 macOS 上必须从 main goroutine 调用。
@@ -89,31 +92,43 @@ func (a *Application) Run() {
 	a.tray.Run()
 }
 
-// discoverServer 尝试在局域网中通过 mDNS 查找 ClipCascade server。
-func (a *Application) discoverServer() (string, error) {
+// discoverServer 尝试在局域网中发现所有可用的 ClipCascade 服务器。
+func (a *Application) discoverServer() ([]string, error) {
 	resolver, err := zeroconf.NewResolver(nil)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	entries := make(chan *zeroconf.ServiceEntry)
-	ctx, cancel := context.WithTimeout(a.ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(a.ctx, 3*time.Second)
 	defer cancel()
 
 	err = resolver.Browse(ctx, "_clipcascade._tcp", "local.", entries)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
+
+	var foundURLs []string
+	seen := make(map[string]bool)
 
 	for {
 		select {
 		case <-ctx.Done():
-			return "", fmt.Errorf("server discovery timed out")
+			if len(foundURLs) > 0 {
+				return foundURLs, nil
+			}
+			return nil, fmt.Errorf("server discovery timed out")
 		case entry := <-entries:
-			if entry != nil && len(entry.AddrIPv4) > 0 {
-				addr := fmt.Sprintf("http://%s:%d", entry.AddrIPv4[0], entry.Port)
-				slog.Info("应用：通过 mDNS 发现服务器", "名称", entry.Instance, "地址", addr)
-				return addr, nil
+			if entry != nil {
+				// 收集该服务条目下的所有 IPv4 地址
+				for _, ip := range entry.AddrIPv4 {
+					url := fmt.Sprintf("http://%s:%d", ip, entry.Port)
+					if !seen[url] {
+						foundURLs = append(foundURLs, url)
+						seen[url] = true
+						slog.Debug("应用：发现潜在服务器地址", "地址", url)
+					}
+				}
 			}
 		}
 	}
@@ -138,26 +153,77 @@ func (a *Application) connect() {
 
 	a.tray.SetStatus("Connecting...")
 
-	// 如果未配置 ServerURL，或者使用的是 localhost（可能被占用），尝试自动发现
-	if a.cfg.ServerURL == "" || strings.Contains(a.cfg.ServerURL, "localhost") {
-		slog.Info("应用：正在尝试局域网服务器发现...")
+	// 确定待尝试的服务器列表
+	var urlsToTry []string
+	if a.cfg.ServerURL != "" {
+		urlsToTry = append(urlsToTry, a.cfg.ServerURL)
+	}
+
+	// 如果未配置、使用的是 localhost、或显式要求发现，则搜索局域网
+	if len(urlsToTry) == 0 || strings.Contains(urlsToTry[0], "localhost") {
+		slog.Info("应用：启动局域网自动发现...")
 		discovered, err := a.discoverServer()
 		if err == nil {
-			a.cfg.ServerURL = discovered
-			slog.Info("应用：自动发现成功", "URL", discovered)
-		} else {
-			slog.Warn("应用：自动发现失败，将使用默认配置", "错误", err, "URL", a.cfg.ServerURL)
+			urlsToTry = append(urlsToTry, discovered...)
 		}
 	}
 
-	// 步骤 1: HTTP login
-	cookies, err := a.login()
-	if err != nil {
-		slog.Error("登录失败", "错误", err)
+	var lastErr error
+	var successfulURL string
+	var cookies []*http.Cookie
+
+	// 依次尝试所有地址
+	for _, targetURL := range urlsToTry {
+		a.cfg.ServerURL = targetURL
+		slog.Info("应用：正在尝试登录服务器", "URL", targetURL)
+
+		cookies, lastErr = a.login()
+		if lastErr == nil {
+			successfulURL = targetURL
+			break
+		}
+		slog.Warn("应用：尝试服务器失败", "URL", targetURL, "错误", lastErr)
+	}
+
+	// 如果所有预设地址都失败了，最后再做一次全网大搜索尝试补救
+	if successfulURL == "" {
+		slog.Info("应用：初次尝试均失败，执行深度补救发现...")
+		discovered, dErr := a.discoverServer()
+		if dErr == nil {
+			slog.Info("应用：局域网发现结果", "候选地址数", len(discovered), "列表", discovered)
+			for _, targetURL := range discovered {
+				// 跳过已经试过失败的
+				retry := true
+				for _, tried := range urlsToTry {
+					if tried == targetURL {
+						retry = false
+						break
+					}
+				}
+				if !retry {
+					continue
+				}
+
+				a.cfg.ServerURL = targetURL
+				slog.Info("应用：正在尝试发现的备选地址", "URL", targetURL)
+				cookies, lastErr = a.login()
+				if lastErr == nil {
+					successfulURL = targetURL
+					break
+				}
+			}
+		}
+	}
+
+	if successfulURL == "" {
+		slog.Error("登录完全失败，请检查服务器状态或配置", "错误", lastErr)
 		a.tray.SetStatus("Login Failed")
-		ui.Notify("ClipCascade", "Login failed: "+err.Error())
+		ui.Notify("ClipCascade", "Failed to connect to any server")
 		return
 	}
+
+	slog.Info("应用：服务器连接成功", "最终URL", successfulURL)
+	a.cfg.ServerURL = successfulURL
 
 	// 步骤 2: 获取用于加密密钥派生的 user 信息技巧。
 	if a.cfg.E2EEEnabled {
@@ -273,6 +339,7 @@ func (a *Application) onCopy(payload string, payloadType string, filename string
 	if a.stomp == nil || !a.stomp.IsConnected() {
 		return
 	}
+	slog.Info("应用：准备发送剪贴板更新", "类型", payloadType, "大小", sizefmt.HumanSizeFromPayload(payloadType, payload))
 
 	// Build ClipboardData
 	clipData := &protocol.ClipboardData{
@@ -298,6 +365,7 @@ func (a *Application) onCopy(payload string, payloadType string, filename string
 
 	if err := a.stomp.Send(body); err != nil {
 		slog.Error("发送失败", "错误", err)
+		return
 	}
 
 	// 也通过 P2P 发送（如果可用）
@@ -351,6 +419,7 @@ func (a *Application) onReceive(body string) {
 	}
 
 	// Paste to local clipboard
+	slog.Info("应用：收到剪贴板更新", "类型", clipData.Type, "大小", sizefmt.HumanSizeFromPayload(clipData.Type, clipData.Payload))
 	a.clip.Paste(clipData.Payload, clipData.Type, clipData.FileName)
 	slog.Debug("应用：已接收并粘贴", "类型", clipData.Type, "大小", len(clipData.Payload))
 }
@@ -365,7 +434,7 @@ func (a *Application) monitorConnection() {
 		case <-a.ctx.Done():
 			return
 		case <-ticker.C:
-			if a.stomp != nil && !a.stomp.IsConnected() && !a.reconnecting {
+			if a.stomp != nil && !a.stomp.IsConnected() && !a.isReconnecting() {
 				slog.Warn("应用：连接丢失，正在触发重连")
 				go a.reconnectLoop()
 			}
@@ -375,11 +444,13 @@ func (a *Application) monitorConnection() {
 
 // reconnectLoop tries to reconnect with exponential backoff and jitter.
 func (a *Application) reconnectLoop() {
-	if !a.cfg.AutoReconnect || a.reconnecting {
+	if !a.cfg.AutoReconnect {
 		return
 	}
-	a.reconnecting = true
-	defer func() { a.reconnecting = false }()
+	if !a.beginReconnect() {
+		return
+	}
+	defer a.endReconnect()
 
 	a.tray.SetStatus("Reconnecting...")
 
@@ -389,12 +460,25 @@ func (a *Application) reconnectLoop() {
 	}
 	maxDelay := time.Duration(constants.MaxReconnectDelay) * time.Second
 
+	failCount := 0
 	for {
 		select {
 		case <-a.ctx.Done():
 			return
 		case <-time.After(delay):
-			slog.Info("应用：正在尝试重连", "延迟", delay)
+			failCount++
+			slog.Info("应用：正在尝试重连", "延迟", delay, "失败次数", failCount)
+
+			// 如果连续失败多次，或者间隔已经拉得很大，尝试重新发现服务器
+			if failCount%3 == 0 {
+				slog.Info("应用：重连多次失败，尝试局域网重新探测服务器列表...")
+				discovered, err := a.discoverServer()
+				if err == nil && len(discovered) > 0 {
+					// 这里只需标记可能需要尝试新地址，后续 connect() 会处理 urlsToTry
+					slog.Info("应用：探测到局域网活跃服务器候选", "数量", len(discovered))
+				}
+			}
+
 			a.connect()
 			if a.stomp != nil && a.stomp.IsConnected() {
 				return // reconnected
@@ -402,6 +486,28 @@ func (a *Application) reconnectLoop() {
 			delay = min(delay*2, maxDelay)
 		}
 	}
+}
+
+func (a *Application) beginReconnect() bool {
+	a.connMu.Lock()
+	defer a.connMu.Unlock()
+	if a.reconnecting {
+		return false
+	}
+	a.reconnecting = true
+	return true
+}
+
+func (a *Application) endReconnect() {
+	a.connMu.Lock()
+	a.reconnecting = false
+	a.connMu.Unlock()
+}
+
+func (a *Application) isReconnecting() bool {
+	a.connMu.Lock()
+	defer a.connMu.Unlock()
+	return a.reconnecting
 }
 
 // disconnect disconnects from the server.

@@ -3,6 +3,7 @@ package ui
 
 import (
 	"log/slog"
+	"strings"
 
 	"github.com/gen2brain/beeep"
 	"github.com/getlantern/systray"
@@ -10,10 +11,12 @@ import (
 
 // Tray 管理系统 tray 图标和菜单。
 type Tray struct {
-	onConnect    func()
-	onDisconnect func()
-	onQuit       func()
-	statusItem   *systray.MenuItem
+	onConnect      func()
+	onDisconnect   func()
+	onQuit         func()
+	statusItem     *systray.MenuItem
+	connectItem    *systray.MenuItem
+	disconnectItem *systray.MenuItem
 }
 
 // NewTray 创建一个新的系统 tray 管理器。
@@ -45,8 +48,8 @@ func (t *Tray) onReady() {
 	if len(iconData) > 0 {
 		systray.SetIcon(iconData) // 显示嵌入的图标图片
 	}
-	// systray.SetTitle("ClipCascade") 
-	// 在 macOS 上，如果同时设置了 Title 和 Icon，那么 Title 的纯文本会强制覆盖掉精美的图标！所以留空以显示 Logo 
+	// systray.SetTitle("ClipCascade")
+	// 在 macOS 上，如果同时设置了 Title 和 Icon，那么 Title 的纯文本会强制覆盖掉精美的图标！所以留空以显示 Logo
 	systray.SetTooltip("ClipCascade - Clipboard Sync")
 
 	t.statusItem = systray.AddMenuItem("Status: Disconnected", "")
@@ -54,19 +57,21 @@ func (t *Tray) onReady() {
 
 	systray.AddSeparator()
 
-	connectItem := systray.AddMenuItem("Connect", "Connect to server")
-	disconnectItem := systray.AddMenuItem("Disconnect", "Disconnect from server")
+	t.connectItem = systray.AddMenuItem("Connect", "Connect to server")
+	t.disconnectItem = systray.AddMenuItem("Disconnect", "Disconnect from server")
+	t.connectItem.Enable()
+	t.disconnectItem.Disable()
 	systray.AddSeparator()
 	quitItem := systray.AddMenuItem("Quit", "Exit ClipCascade")
 
 	go func() {
 		for {
 			select {
-			case <-connectItem.ClickedCh:
+			case <-t.connectItem.ClickedCh:
 				if t.onConnect != nil {
 					t.onConnect()
 				}
-			case <-disconnectItem.ClickedCh:
+			case <-t.disconnectItem.ClickedCh:
 				if t.onDisconnect != nil {
 					t.onDisconnect()
 				}
@@ -89,6 +94,27 @@ func (t *Tray) SetStatus(status string) {
 	if t.statusItem != nil {
 		t.statusItem.SetTitle("Status: " + status)
 	}
+
+	if t.connectItem == nil || t.disconnectItem == nil {
+		return
+	}
+
+	s := strings.ToLower(status)
+	isConnected := strings.Contains(s, "connected") && !strings.Contains(s, "disconnected")
+	isBusy := strings.Contains(s, "connecting") || strings.Contains(s, "reconnecting")
+
+	if isConnected {
+		t.connectItem.Disable()
+		t.disconnectItem.Enable()
+		return
+	}
+	if isBusy {
+		t.connectItem.Disable()
+		t.disconnectItem.Disable()
+		return
+	}
+	t.connectItem.Enable()
+	t.disconnectItem.Disable()
 }
 
 // Notify 发送桌面通知。

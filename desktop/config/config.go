@@ -4,16 +4,16 @@ package config
 import (
 	"encoding/json"
 	"os"
-	"strconv"
 	"path/filepath"
 	"runtime"
+	"strconv"
 
 	"github.com/clipcascade/pkg/constants"
 )
 
 // Config 保存 client config。
 type Config struct {
-	ServerURL      string `json:"server_url"`  // e.g. "http://localhost:8080"
+	ServerURL      string `json:"server_url"` // e.g. "http://localhost:8080"
 	Username       string `json:"username"`
 	Password       string `json:"password"`
 	E2EEEnabled    bool   `json:"e2ee_enabled"`
@@ -69,6 +69,9 @@ func Load() *Config {
 	}
 	_ = json.Unmarshal(data, cfg)
 	cfg.FilePath = cfgPath
+	if envPassword := os.Getenv("CLIPCASCADE_PASSWORD"); envPassword != "" {
+		cfg.Password = envPassword
+	}
 	return cfg
 }
 
@@ -77,7 +80,12 @@ func (c *Config) Save() error {
 	if err := os.MkdirAll(filepath.Dir(c.FilePath), 0755); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(c, "", "  ")
+	toSave := *c
+	// 当使用环境变量注入密码时，避免将密码明文持久化到磁盘。
+	if os.Getenv("CLIPCASCADE_PASSWORD") != "" {
+		toSave.Password = ""
+	}
+	data, err := json.MarshalIndent(toSave, "", "  ")
 	if err != nil {
 		return err
 	}

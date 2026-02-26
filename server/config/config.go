@@ -12,49 +12,49 @@ import (
 
 // Config 保存所有 server config。
 type Config struct {
-	Port                    int
-	MaxMessageSizeMiB       int
-	MaxMessageSizeBytes     int64
-	P2PEnabled              bool
-	P2PStunURL              string
-	AllowedOrigins          string
-	SignupEnabled           bool
-	MaxUserAccounts         int
-	AccountPurgeTimeout     int64 // seconds, -1 = disabled
-	SessionTimeoutMinutes   int
-	MaxUniqueIPAttempts     int
-	MaxAttemptsPerIP        int
-	LockTimeoutSeconds      int
-	LockScalingFactor       int
-	BFACacheEnabled         bool
-	DatabasePath            string
-	ExternalBrokerEnabled   bool
-	BrokerHost              string
-	BrokerPort              int
+	Port                  int
+	MaxMessageSizeMiB     int
+	MaxMessageSizeBytes   int64
+	P2PEnabled            bool
+	P2PStunURL            string
+	AllowedOrigins        string
+	SignupEnabled         bool
+	MaxUserAccounts       int
+	AccountPurgeTimeout   int64 // seconds, -1 = disabled
+	SessionTimeoutMinutes int
+	MaxUniqueIPAttempts   int
+	MaxAttemptsPerIP      int
+	LockTimeoutSeconds    int
+	LockScalingFactor     int
+	BFACacheEnabled       bool
+	DatabasePath          string
+	ExternalBrokerEnabled bool
+	BrokerHost            string
+	BrokerPort            int
 }
 
 // Load 从带有合理默认值的环境变量中读取 config。
 func Load() *Config {
 	c := &Config{
 		Port:                  envInt("CC_PORT", constants.DefaultPort),
-		MaxMessageSizeMiB:    envInt("CC_MAX_MESSAGE_SIZE_IN_MiB", constants.DefaultMaxMessageSizeMiB),
-		MaxMessageSizeBytes:  envInt64("CC_MAX_MESSAGE_SIZE_IN_BYTES", 0),
-		P2PEnabled:           envBool("CC_P2P_ENABLED", false),
-		P2PStunURL:           envStr("CC_P2P_STUN_URL", constants.DefaultStunURL),
-		AllowedOrigins:       envStr("CC_ALLOWED_ORIGINS", "*"),
-		SignupEnabled:        envBool("CC_SIGNUP_ENABLED", false),
-		MaxUserAccounts:      envInt("CC_MAX_USER_ACCOUNTS", -1),
-		AccountPurgeTimeout:  envInt64("CC_ACCOUNT_PURGE_TIMEOUT_SECONDS", -1),
+		MaxMessageSizeMiB:     envInt("CC_MAX_MESSAGE_SIZE_IN_MiB", constants.DefaultMaxMessageSizeMiB),
+		MaxMessageSizeBytes:   envInt64("CC_MAX_MESSAGE_SIZE_IN_BYTES", 0),
+		P2PEnabled:            envBool("CC_P2P_ENABLED", false),
+		P2PStunURL:            envStr("CC_P2P_STUN_URL", constants.DefaultStunURL),
+		AllowedOrigins:        envStr("CC_ALLOWED_ORIGINS", "*"),
+		SignupEnabled:         envBool("CC_SIGNUP_ENABLED", false),
+		MaxUserAccounts:       envInt("CC_MAX_USER_ACCOUNTS", -1),
+		AccountPurgeTimeout:   envInt64("CC_ACCOUNT_PURGE_TIMEOUT_SECONDS", -1),
 		SessionTimeoutMinutes: envInt("CC_SESSION_TIMEOUT", constants.DefaultSessionTimeoutMin),
-		MaxUniqueIPAttempts:  envInt("CC_MAX_UNIQUE_IP_ATTEMPTS", constants.DefaultMaxUniqueIPAttempts),
-		MaxAttemptsPerIP:     envInt("CC_MAX_ATTEMPTS_PER_IP", constants.DefaultMaxAttemptsPerIP),
-		LockTimeoutSeconds:   envInt("CC_LOCK_TIMEOUT_SECONDS", constants.DefaultLockTimeoutSeconds),
-		LockScalingFactor:    envInt("CC_LOCK_TIMEOUT_SCALING_FACTOR", constants.DefaultLockScalingFactor),
-		BFACacheEnabled:      envBool("CC_BFA_CACHE_ENABLED", true),
-		DatabasePath:         envStr("CC_DATABASE_PATH", "./database/clipcascade.db"),
+		MaxUniqueIPAttempts:   envInt("CC_MAX_UNIQUE_IP_ATTEMPTS", constants.DefaultMaxUniqueIPAttempts),
+		MaxAttemptsPerIP:      envInt("CC_MAX_ATTEMPTS_PER_IP", constants.DefaultMaxAttemptsPerIP),
+		LockTimeoutSeconds:    envInt("CC_LOCK_TIMEOUT_SECONDS", constants.DefaultLockTimeoutSeconds),
+		LockScalingFactor:     envInt("CC_LOCK_TIMEOUT_SCALING_FACTOR", constants.DefaultLockScalingFactor),
+		BFACacheEnabled:       envBool("CC_BFA_CACHE_ENABLED", true),
+		DatabasePath:          envStr("CC_DATABASE_PATH", "./database/clipcascade.db"),
 		ExternalBrokerEnabled: envBool("CC_EXTERNAL_BROKER_ENABLED", false),
-		BrokerHost:           envStr("CC_BROKER_HOST", "localhost"),
-		BrokerPort:           envInt("CC_BROKER_PORT", 61613),
+		BrokerHost:            envStr("CC_BROKER_HOST", "localhost"),
+		BrokerPort:            envInt("CC_BROKER_PORT", 61613),
 	}
 	return c
 }

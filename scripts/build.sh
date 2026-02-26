@@ -23,6 +23,25 @@ error() { echo -e "${RED}[错误]${NC} $*" >&2; }
 
 mkdir -p "$BUILD_DIR"
 
+# 清理可能导致 CGO/Xcode 误指向不存在 SDK 的环境变量
+sanitize_macos_env() {
+    if [[ "$(uname)" != "Darwin" ]]; then
+        return 0
+    fi
+    if [[ -n "${SDKROOT:-}" && ! -d "${SDKROOT}" ]]; then
+        warn "检测到无效 SDKROOT=${SDKROOT}，已自动清除后重试。"
+        unset SDKROOT
+    fi
+}
+
+can_build_macos_cgo() {
+    [[ "$(uname)" == "Darwin" ]] || return 1
+    command -v clang >/dev/null 2>&1 || return 1
+    local sdk_path
+    sdk_path="$(xcrun --show-sdk-path 2>/dev/null || true)"
+    [[ -n "$sdk_path" && -d "$sdk_path" ]]
+}
+
 # ─── 检查环境 ───
 check_go() {
     if ! command -v go &>/dev/null; then
@@ -36,6 +55,11 @@ check_docker() {
         error "未找到 Docker 环境。"
         exit 1
     fi
+}
+
+docker_daemon_ready() {
+    command -v docker &>/dev/null || return 1
+    docker info >/dev/null 2>&1
 }
 
 check_gomobile() {
@@ -86,35 +110,43 @@ build_desktop() {
 build_desktop_cross() {
     local host_os=$(go env GOOS)
     info "正在为所有平台交叉编译桌面端..."
+    sanitize_macos_env
     
     cd "$ROOT_DIR/desktop"
     mkdir -p "$BUILD_DIR"
     
     # 1. macOS (Darwin) - 原生编译
-    info "  → 编译中: darwin/amd64"
-    if [[ "$host_os" == "darwin" ]]; then
-        GOOS=darwin GOARCH=amd64 CGO_ENABLED=1 go build -ldflags="$LDFLAGS" -o "$BUILD_DIR/clipcascade-desktop-darwin-amd64" . || warn "    ⚠ darwin/amd64 编译失败"
+    if [[ "$host_os" == "darwin" ]] && can_build_macos_cgo; then
+        local sdk_path
+        sdk_path="$(xcrun --show-sdk-path)"
+        info "  → 编译中: darwin/amd64"
+        env SDKROOT="$sdk_path" GOOS=darwin GOARCH=amd64 CGO_ENABLED=1 go build -ldflags="$LDFLAGS" -o "$BUILD_DIR/clipcascade-desktop-darwin-amd64" . || warn "    ⚠ darwin/amd64 编译失败"
         info "  → 编译中: darwin/arm64"
-        GOOS=darwin GOARCH=arm64 CGO_ENABLED=1 go build -ldflags="$LDFLAGS" -o "$BUILD_DIR/clipcascade-desktop-darwin-arm64" . || warn "    ⚠ darwin/arm64 编译失败"
+        env SDKROOT="$sdk_path" GOOS=darwin GOARCH=arm64 CGO_ENABLED=1 go build -ldflags="$LDFLAGS" -o "$BUILD_DIR/clipcascade-desktop-darwin-arm64" . || warn "    ⚠ darwin/arm64 编译失败"
     else
-        warn "    ⚠ 跳过 macOS 构建 (CGO 需要在 macOS 主机编译)"
+        warn "    ⚠ 跳过 macOS 构建 (缺少可用 Xcode/SDK/clang)"
     fi
     
-    # 2. Windows - 因为我们全程实现了纯 Go 的剪贴板钩子，Windows 端现己支持 100% 无 CGO 跨平台编译！再也不需要 MinGW 了！
+    # 2. Windows - 默认保留控制台窗口，便于查看日志调试。  带了 -H=windowsgui（无黑框、托盘模式）
+    # 如需纯托盘无黑框，请设置: CLIPCASCADE_WINDOWS_GUI=1
     info "  → 编译中: windows/amd64 (100% Pure Go)"
-    GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="$LDFLAGS -H=windowsgui" -o "$BUILD_DIR/clipcascade-desktop-windows-amd64.exe" . || warn "    ⚠ windows/amd64 编译失败"
+    local win_ldflags="$LDFLAGS"
+    if [[ "${CLIPCASCADE_WINDOWS_GUI:-0}" == "1" ]]; then
+        win_ldflags="$LDFLAGS -H=windowsgui"
+    fi
+    GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="$win_ldflags" -o "$BUILD_DIR/clipcascade-desktop-windows-amd64.exe" . || warn "    ⚠ windows/amd64 编译失败"
 
 
     # 3. Linux - 使用 Docker 交叉编译 (由于依赖 GTK3)
     info "  → 编译中: linux/amd64 (通过 Docker)"
-    if command -v docker &>/dev/null; then
+    if docker_daemon_ready; then
         info "    正在启动 Docker 容器进行 Linux CGO 编译..."
         docker run --rm -v "$ROOT_DIR:/app" -w /app/desktop golang:1.22-bookworm bash -c "
             apt-get update && apt-get install -y libgtk-3-dev libx11-dev libayatana-appindicator3-dev pkg-config && 
             GOOS=linux GOARCH=amd64 CGO_ENABLED=1 go build -ldflags=\"$LDFLAGS\" -o /app/build/clipcascade-desktop-linux-amd64 .
         " || warn "    ⚠ linux/amd64 编译失败"
     else
-        warn "    ⚠ 未找到 Docker，跳过 Linux 交叉编译"
+        warn "    ⚠ Docker daemon 不可用，跳过 Linux 交叉编译"
     fi
 
     info "✅ 桌面端交叉编译流程结束"
@@ -136,12 +168,17 @@ check_fyne() {
 
 build_desktop_ui() {
     info "正在构建桌面端 UI 版 (利用 Fyne 可跨所有桌面系统运行)..."
+    sanitize_macos_env
     mkdir -p "$BUILD_DIR"
     local os=$(go env GOOS)
     local arch=$(go env GOARCH)
     
     cd "$ROOT_DIR/fyne_mobile"
-    go build -ldflags="-s -w" -o "$BUILD_DIR/clipcascade-ui-desktop-$os-$arch" . || { error "桌面 UI 构建失败"; exit 1; }
+    if ! go build -ldflags="-s -w" -o "$BUILD_DIR/clipcascade-ui-desktop-$os-$arch" .; then
+        warn "⚠ 桌面 UI 构建失败，已跳过（可稍后单独执行 ./scripts/build.sh desktop-ui）"
+        cd "$ROOT_DIR"
+        return 0
+    fi
     info "✅ 桌面 UI 构建成功 → $BUILD_DIR/clipcascade-ui-desktop-$os-$arch"
     cd "$ROOT_DIR"
 }
@@ -161,7 +198,10 @@ check_fyne_cross() {
 build_desktop_ui_cross() {
     info "正在为所有平台交叉编译桌面端 UI 版 (依靠 Docker 和 fyne-cross)..."
     check_fyne_cross
-    check_docker
+    if ! docker_daemon_ready; then
+        warn "⚠ Docker daemon 不可用，跳过 desktop-ui-cross"
+        return 0
+    fi
     mkdir -p "$BUILD_DIR"
     
     cd "$ROOT_DIR/fyne_mobile"
@@ -270,11 +310,16 @@ for target in "$@"; do
         desktop)          build_desktop ;;
         desktop-ui)       build_desktop_ui ;;
         desktop-ui-cross) build_desktop_ui_cross ;;
-        cross)            build_server_cross; build_desktop_cross; build_desktop_ui_cross ;;
+        cross)            build_server_cross; build_desktop_cross; build_desktop_ui_cross || warn "cross 某些目标构建失败，已继续" ;;
         mobile-android)   build_mobile_android ;;
         mobile-ios)       build_mobile_ios ;;
         docker)           build_docker ;;
-        all)              build_server_cross; build_desktop_cross; build_desktop_ui; build_mobile_android; build_mobile_ios; build_desktop_ui_cross ;;
+        all)              build_server_cross || warn "server-cross 构建失败";
+                          build_desktop_cross || warn "desktop-cross 构建失败";
+                          build_desktop_ui || warn "desktop-ui 构建失败";
+                          build_mobile_android || warn "mobile-android 构建失败";
+                          build_mobile_ios || warn "mobile-ios 构建失败";
+                          build_desktop_ui_cross || warn "desktop-ui-cross 构建失败" ;;
         tidy)           tidy ;;
         clean)          clean ;;
         *)              show_help; exit 1 ;;

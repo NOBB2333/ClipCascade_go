@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/glebarez/sqlite" // 纯 Go 实现的 SQLite (无需 CGO)
 	"github.com/gofiber/contrib/websocket"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
@@ -22,7 +23,6 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/session"
 	"github.com/gofiber/template/html/v2"
 	"golang.org/x/crypto/bcrypt"
-	"github.com/glebarez/sqlite" // 纯 Go 实现的 SQLite (无需 CGO)
 	"gorm.io/gorm"
 
 	"github.com/clipcascade/server/config"
@@ -340,4 +340,3 @@ func getLocalIPs() []string {
 	}
 	return ips
 }
-

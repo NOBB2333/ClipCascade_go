@@ -12,35 +12,35 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gorilla/websocket"
-	"github.com/google/uuid"
-	"github.com/pion/webrtc/v4"
 	"github.com/clipcascade/pkg/constants"
+	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
+	"github.com/pion/webrtc/v4"
 	// "github.com/clipcascade/pkg/protocol" is now cleanly bypassed so the P2P layer won't falsely escape E2EE JSON blocks
 )
 
 // P2PClient 管理用于 P2P 剪贴板同步的 WebRTC peer 连接。
 type P2PClient struct {
-	serverURL   string
-	cookies     []*http.Cookie
-	wsConn      *websocket.Conn
-	mu          sync.Mutex
-	peers       map[string]*webrtc.PeerConnection // sessionID → PeerConnection
-	dataChans   map[string]*webrtc.DataChannel     // sessionID → DataChannel
-	sessionID   string
+	serverURL          string
+	cookies            []*http.Cookie
+	wsConn             *websocket.Conn
+	mu                 sync.Mutex
+	peers              map[string]*webrtc.PeerConnection // sessionID → PeerConnection
+	dataChans          map[string]*webrtc.DataChannel    // sessionID → DataChannel
+	sessionID          string
 	stunURL            string
 	onReceive          func(data string)
 	receivingFragments map[string][]string // ID -> fragments
 	done               chan struct{}
-	wsMu               sync.Mutex          // 防止 Gorilla WebSocket 发生并发死写 panic
+	wsMu               sync.Mutex // 防止 Gorilla WebSocket 发生并发死写 panic
 }
 
 // NewP2PClient 创建一个连接到 signaling server 的 P2P client。
 func NewP2PClient(serverURL string, cookies []*http.Cookie, stunURL string) *P2PClient {
 	return &P2PClient{
-		serverURL: serverURL,
-		cookies:   cookies,
-		stunURL:   stunURL,
+		serverURL:          serverURL,
+		cookies:            cookies,
+		stunURL:            stunURL,
 		peers:              make(map[string]*webrtc.PeerConnection),
 		dataChans:          make(map[string]*webrtc.DataChannel),
 		receivingFragments: make(map[string][]string),
@@ -93,7 +93,6 @@ func (p *P2PClient) Send(data string) {
 	if numFragments == 0 {
 		return
 	}
-
 
 	// P2P 专用分片包装结构 (不使用 protocol.ClipboardData 避免与应用层/E2EE 双重嵌套)
 	type p2pFragment struct {
@@ -150,11 +149,65 @@ func (p *P2PClient) Close() {
 
 	if p.wsConn != nil {
 		p.wsConn.Close()
+		p.wsConn = nil
 	}
 }
 
 // signalLoop 从 WebSocket 读取 signaling 消息。
 func (p *P2PClient) signalLoop() {
+	const readTimeout = 120 * time.Second
+	const pingInterval = 30 * time.Second
+
+	heartbeatDone := make(chan struct{})
+	defer close(heartbeatDone)
+
+	p.mu.Lock()
+	conn := p.wsConn
+	p.mu.Unlock()
+	if conn == nil {
+		return
+	}
+
+	conn.SetReadDeadline(time.Now().Add(readTimeout))
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(readTimeout))
+		return nil
+	})
+
+	defer func() {
+		p.mu.Lock()
+		if p.wsConn == conn {
+			p.wsConn = nil
+		}
+		p.mu.Unlock()
+	}()
+
+	// 启动 P2P 信令心跳
+	go func() {
+		ticker := time.NewTicker(pingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-p.done:
+				return
+			case <-heartbeatDone:
+				return
+			case <-ticker.C:
+				p.wsMu.Lock()
+				p.mu.Lock()
+				connClosed := p.wsConn != conn || p.wsConn == nil
+				p.mu.Unlock()
+				if !connClosed {
+					_ = conn.WriteMessage(websocket.PingMessage, nil)
+				}
+				p.wsMu.Unlock()
+				if connClosed {
+					return
+				}
+			}
+		}
+	}()
+
 	for {
 		select {
 		case <-p.done:
@@ -162,11 +215,13 @@ func (p *P2PClient) signalLoop() {
 		default:
 		}
 
-		_, msg, err := p.wsConn.ReadMessage()
+		_, msg, err := conn.ReadMessage()
 		if err != nil {
 			slog.Warn("p2p: signaling read error", "error", err)
 			return
 		}
+
+		conn.SetReadDeadline(time.Now().Add(readTimeout))
 
 		var signal struct {
 			Type      string          `json:"type"`
@@ -432,7 +487,7 @@ func (p *P2PClient) sendSignal(msgType, to string, data json.RawMessage) {
 		"to":   to,
 		"data": data,
 	})
-	
+
 	p.wsMu.Lock()
 	if p.wsConn != nil {
 		p.wsConn.WriteMessage(websocket.TextMessage, msg)

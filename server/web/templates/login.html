@@ -18,6 +18,7 @@
         button:hover { transform: translateY(-1px); box-shadow: 0 4px 20px rgba(108,99,255,.4); }
         .error { background: rgba(255,107,107,.15); border: 1px solid rgba(255,107,107,.3); color: #ff6b6b; padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; font-size: 14px; }
         .success { background: rgba(107,255,107,.15); border: 1px solid rgba(107,255,107,.3); color: #6bff6b; padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; font-size: 14px; }
+        .hint { background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.12); color: #cfcfcf; padding: 10px 14px; border-radius: 8px; margin-top: 16px; font-size: 13px; text-align: center; }
         .link { text-align: center; margin-top: 16px; font-size: 13px; }
         .link a { color: #6c63ff; text-decoration: none; }
         .link a:hover { text-decoration: underline; }
@@ -28,7 +29,13 @@
         <h1>🔗 ClipCascade</h1>
         <p class="subtitle">Clipboard Sync Server</p>
 
-        {{if .error}}
+        {{if eq .error "missing_credentials"}}
+        <div class="error">Username and password are required.</div>
+        {{else if eq .error "disabled"}}
+        <div class="error">This account is disabled. Contact admin.</div>
+        {{else if eq .error "session_error"}}
+        <div class="error">Session error. Please retry.</div>
+        {{else if .error}}
         <div class="error">Invalid username or password.</div>
         {{end}}
 
@@ -47,7 +54,11 @@
             </div>
             <button type="submit">Sign In</button>
         </form>
+        {{if .signup_enabled}}
         <div class="link"><a href="/signup">Create an account</a></div>
+        {{else}}
+        <div class="hint">Signup is disabled. Ask admin to create your account in Admin Panel.</div>
+        {{end}}
     </div>
 </body>
 </html>
