@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"fyne.io/fyne/v2/layout"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -33,8 +34,8 @@ func main() {
 	// Create UI elements
 	title := widget.NewLabelWithStyle("ClipCascade", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
 
-	serverEntry := widget.NewEntry()
-	serverEntry.SetPlaceHolder("Scanning network... or enter http://ip:8080")
+	serverEntry := widget.NewSelectEntry(nil)
+	serverEntry.SetPlaceHolder("Enter server URL or choose discovered host")
 	serverURL := a.Preferences().StringWithFallback("ServerURL", "")
 	serverEntry.Text = serverURL
 
@@ -51,30 +52,70 @@ func main() {
 
 	statusLabel := widget.NewLabel("Status: Disconnected")
 
-	// 自动通过 mDNS 发现局域网服务器
-	if serverURL == "" || serverURL == "http://localhost:8080" {
-		go func() {
-			resolver, err := zeroconf.NewResolver(nil)
-			if err != nil {
-				return
-			}
-			entries := make(chan *zeroconf.ServiceEntry)
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
+	// 自动通过 mDNS 发现局域网服务器（收集全部候选，不只第一个）。
+	var discoveredMu sync.Mutex
+	discoveredSet := make(map[string]struct{})
+	discoveredHosts := make([]string, 0, 8)
+	addDiscoveredHost := func(addr string) {
+		addr = strings.TrimSpace(addr)
+		if addr == "" {
+			return
+		}
+		discoveredMu.Lock()
+		if _, exists := discoveredSet[addr]; exists {
+			discoveredMu.Unlock()
+			return
+		}
+		discoveredSet[addr] = struct{}{}
+		discoveredHosts = append(discoveredHosts, addr)
+		sort.Strings(discoveredHosts)
+		options := append([]string(nil), discoveredHosts...)
+		discoveredMu.Unlock()
 
-			if err := resolver.Browse(ctx, "_clipcascade._tcp", "local.", entries); err == nil {
-				select {
-				case <-ctx.Done():
-				case entry := <-entries:
-					if entry != nil && len(entry.AddrIPv4) > 0 {
-						addr := fmt.Sprintf("http://%s:%d", entry.AddrIPv4[0], entry.Port)
-						// 确保在 UI 线程更新组件
-						serverEntry.SetText(addr)
-					}
+		fyne.Do(func() {
+			serverEntry.SetOptions(options)
+			current := strings.TrimSpace(serverEntry.Text)
+			if current == "" || current == "http://localhost:8080" {
+				serverEntry.SetText(options[0])
+			}
+		})
+	}
+	// 把已保存的地址也放进下拉候选里，便于快速切换。
+	addDiscoveredHost(serverURL)
+
+	go func() {
+		resolver, err := zeroconf.NewResolver(nil)
+		if err != nil {
+			return
+		}
+		entries := make(chan *zeroconf.ServiceEntry)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		if err := resolver.Browse(ctx, "_clipcascade._tcp", "local.", entries); err != nil {
+			return
+		}
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case entry := <-entries:
+				if entry == nil {
+					continue
+				}
+				for _, ip := range entry.AddrIPv4 {
+					addDiscoveredHost(fmt.Sprintf("http://%s:%d", ip, entry.Port))
+				}
+				for _, ip := range entry.AddrIPv6 {
+					addDiscoveredHost(fmt.Sprintf("http://[%s]:%d", ip, entry.Port))
+				}
+				if len(entry.AddrIPv4) == 0 && len(entry.AddrIPv6) == 0 && entry.HostName != "" {
+					host := strings.TrimSuffix(entry.HostName, ".")
+					addDiscoveredHost(fmt.Sprintf("http://%s:%d", host, entry.Port))
 				}
 			}
-		}()
-	}
+		}
+	}()
 
 	var connectBtn, disconnectBtn *widget.Button
 

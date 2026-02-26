@@ -4,6 +4,35 @@
 
 ## 构建
 
+### 环境准备（必看）
+
+基础环境：
+- Go `1.22+`（建议与 CI 一致，当前 CI 使用 `1.25`）
+- Git
+- `PATH` 包含 `$(go env GOPATH)/bin`
+
+按构建目标补充：
+- Desktop/Linux 交叉编译：需要 Docker，并确保 Docker daemon 已启动。
+- macOS Desktop 构建：需要 Xcode Command Line Tools（`xcode-select --install`）。
+- Android（Fyne）构建：需要 Android SDK / NDK。
+- Android 原生保活版（`mobile-android-native`）：
+  - JDK `17`
+  - Android SDK（`platform-tools`、`platforms;android-34`、`build-tools;34.0.0`）
+  - Android NDK（建议 `26.1.10909125`）
+  - `gomobile`（`go install golang.org/x/mobile/cmd/gomobile@latest && gomobile init`）
+
+建议设置的环境变量（Android 原生保活版）：
+
+```bash
+export ANDROID_HOME="$ANDROID_SDK_ROOT"
+export ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk/26.1.10909125"
+export CC_ANDROID_API=26
+```
+
+说明：
+- 项目已内置 `mobile/android/gradlew`，不要求全局安装 Gradle。
+- 若遇到 Gradle 缓存污染，可删除根目录 `.gradle-user-home/` 后重试。
+
 ### 一键构建
 
 ```bash
@@ -31,7 +60,13 @@
 ./scripts/build.sh cross
 ./scripts/build.sh desktop-ui
 ./scripts/build.sh mobile-android
+./scripts/build.sh mobile-android-native
 ```
+
+`mobile-android-native` 产物说明：
+- 可直接安装（推荐）：`build/ClipCascade-Android-Debug.apk`
+- 便捷别名：`build/ClipCascade-Android-Installable.apk`
+- 发布包（未签名）：`build/ClipCascade-Android-Release-Unsigned.apk`
 
 ### Windows 黑框模式
 
@@ -138,3 +173,11 @@ open -a OrbStack
 请确认两端都使用最新 desktop 二进制，并检查日志是否出现：
 - `应用：准备发送剪贴板更新 类型=file_eager`
 - `剪贴板：已接收并写入文件到临时目录`
+
+### 4) Android 安装时报“解析软件包出现问题 / packageInfo is null”
+
+通常是安装了 `Release-Unsigned` 包。该包未签名，系统会拒绝安装。
+
+请改为安装：
+- `build/ClipCascade-Android-Debug.apk`
+- 或 `build/ClipCascade-Android-Installable.apk`

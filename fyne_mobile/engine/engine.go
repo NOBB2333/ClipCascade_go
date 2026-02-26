@@ -38,6 +38,7 @@ type MessageCallback interface {
 // Engine 是用于 mobile 剪贴板同步的主要 Go engine。
 type Engine struct {
 	mu         sync.Mutex
+	writeMu    sync.Mutex
 	serverURL  string
 	username   string
 	password   string
@@ -99,6 +100,7 @@ func (e *Engine) Start() error {
 	e.setConnected(true)
 	e.notifyStatus("connected")
 	go e.readLoop()
+	go e.heartbeatLoop()
 	return nil
 }
 
@@ -118,7 +120,9 @@ func (e *Engine) Stop() {
 	e.mu.Unlock()
 
 	if conn != nil {
+		e.writeMu.Lock()
 		_ = conn.WriteMessage(websocket.TextMessage, protocol.NewFrame("DISCONNECT").Encode())
+		e.writeMu.Unlock()
 		_ = conn.Close()
 	}
 	e.notifyStatus("disconnected")
@@ -152,7 +156,9 @@ func (e *Engine) SendClipboard(payload string, payloadType string) error {
 	}
 
 	sendFrame := protocol.SendFrame("/app/cliptext", body)
+	e.writeMu.Lock()
 	err := conn.WriteMessage(websocket.TextMessage, sendFrame.Encode())
+	e.writeMu.Unlock()
 
 	return err
 }
@@ -306,6 +312,34 @@ func (e *Engine) reconnectLoop() error {
 		}
 		if backoff < 30*time.Second {
 			backoff *= 2
+		}
+	}
+}
+
+func (e *Engine) heartbeatLoop() {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-e.done:
+			return
+		case <-ticker.C:
+			e.mu.Lock()
+			conn := e.wsConn
+			e.mu.Unlock()
+			if conn == nil {
+				continue
+			}
+
+			// STOMP heartbeat: single LF
+			e.writeMu.Lock()
+			err := conn.WriteMessage(websocket.TextMessage, []byte("\n"))
+			e.writeMu.Unlock()
+			if err != nil {
+				log.Println("bridge: heartbeat failed:", err)
+				_ = conn.Close() // readLoop will detect and reconnect
+			}
 		}
 	}
 }

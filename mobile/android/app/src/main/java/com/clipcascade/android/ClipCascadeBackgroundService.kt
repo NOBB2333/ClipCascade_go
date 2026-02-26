@@ -17,21 +17,22 @@ import android.util.Log
 import android.view.WindowManager
 import android.widget.LinearLayout
 import androidx.core.content.ContextCompat
+import bridge.bridge.Bridge
+import bridge.bridge.Engine
+import bridge.bridge.MessageCallback
 
-// 引入由 Go 编译出的 engine (这里先注释掉，等待 gomobile 编译后引入)
-// import bridge.Bridge
-// import bridge.MessageCallback
-// import bridge.Engine
-
-class ClipCascadeBackgroundService : Service() /*, MessageCallback*/ {
+class ClipCascadeBackgroundService : Service(), MessageCallback {
 
     private val TAG = "ClipCascade_BgSvc"
     
     private val notificationId = 1001
     private val channelId = "clipcascade_sync_channel"
     
-    // 我们将在这里持有 Go 引擎的实例
-    // private var engine: Engine? = null
+    // 后台同步引擎实例
+    @Volatile
+    private var engine: Engine? = null
+    @Volatile
+    private var engineStarting = false
     
     private lateinit var clipboardManager: ClipboardManager
     private lateinit var notificationManager: NotificationManager
@@ -64,30 +65,8 @@ class ClipCascadeBackgroundService : Service() /*, MessageCallback*/ {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // 在这里初始化 Go 引擎，读取 SharedPreferences 里的配置
         Log.i(TAG, "🚀 后台服务已启动 (onStartCommand)")
-        
-        // TODO: 初始化和启动 Go 引擎
-        /*
-        val prefs = getSharedPreferences("clipcascade", Context.MODE_PRIVATE)
-        val url = prefs.getString("ServerURL", "") ?: ""
-        val user = prefs.getString("Username", "") ?: ""
-        val pass = prefs.getString("Password", "") ?: ""
-        val e2e = prefs.getBoolean("E2EE", true)
-        
-        engine = Bridge.newEngine(url, user, pass, e2e)
-        engine?.setCallback(this)
-        
-        Thread {
-            try {
-                engine?.start()
-                updateNotificationContent("已连接到服务器，实时同步中✅")
-            } catch (e: Exception) {
-                Log.e(TAG, "Go 引擎启动失败", e)
-                updateNotificationContent("连接失败: ${e.message}❌")
-            }
-        }.start()
-        */
+        startEngineIfNeeded()
         
         // 保证服务被杀后系统自动重启它
         return START_STICKY
@@ -103,6 +82,7 @@ class ClipCascadeBackgroundService : Service() /*, MessageCallback*/ {
      */
     fun requestClipboardReadForSync() {
         Log.i(TAG, "🔍 开始请求读取剪贴板...")
+        startEngineIfNeeded()
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 // 添加悬浮窗，抢夺前台焦点
@@ -126,7 +106,6 @@ class ClipCascadeBackgroundService : Service() /*, MessageCallback*/ {
     /**
      * 将其他设备推过来的文本写入 Android 的剪贴板
      */
-     /*
     override fun onMessage(payload: String, payloadType: String) {
         Log.i(TAG, "📥 收到远端推送: [类型=$payloadType] 内容=$payload")
         if (payloadType == "text") {
@@ -145,6 +124,7 @@ class ClipCascadeBackgroundService : Service() /*, MessageCallback*/ {
                 lastWrittenText = payload
                 val clip = ClipData.newPlainText("ClipCascade", payload)
                 clipboardManager.setPrimaryClip(clip)
+                ClipboardHistoryStore.append(this, payload, "received")
                 Log.i(TAG, "✅ 成功写入 Android 系统剪贴板")
                 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -159,12 +139,13 @@ class ClipCascadeBackgroundService : Service() /*, MessageCallback*/ {
     override fun onStatusChange(status: String) {
         Log.i(TAG, "网络状态变更: $status")
         when (status) {
-            "connected" -> updateNotificationContent(getString(R.string.notification_desc_connected))
-            "disconnected" -> updateNotificationContent(getString(R.string.notification_desc_disconnected))
+            "connected" -> updateNotificationContent("已连接到服务器，实时同步中")
+            "disconnected" -> updateNotificationContent("连接已断开，等待自动重连")
+            "reconnecting" -> updateNotificationContent("正在重连服务器...")
             "error" -> updateNotificationContent("连接错误")
+            else -> updateNotificationContent("状态: $status")
         }
     }
-    */
 
     private val onClipChangeListener = ClipboardManager.OnPrimaryClipChangedListener {
         // 这个回调只有在我们处于（真前台、假前台/悬浮窗期间）才会被系统触发
@@ -184,11 +165,49 @@ class ClipCascadeBackgroundService : Service() /*, MessageCallback*/ {
                 
                 Log.i(TAG, "📤 准备将其发送给其他设备: $textToSync")
                 lastWrittenText = textToSync
-                // engine?.sendClipboard(textToSync, "text")
+                try {
+                    engine?.sendClipboard(textToSync, "text")
+                    ClipboardHistoryStore.append(this, textToSync, "sent")
+                } catch (e: Exception) {
+                    Log.e(TAG, "发送剪贴板失败: ${e.message}", e)
+                }
             }
         } else {
             Log.d(TAG, "剪贴板为空")
         }
+    }
+
+    private fun startEngineIfNeeded() {
+        if (engine != null || engineStarting) {
+            return
+        }
+        val prefs = getSharedPreferences("clipcascade", Context.MODE_PRIVATE)
+        val url = prefs.getString("ServerURL", "") ?: ""
+        val user = prefs.getString("Username", "") ?: ""
+        val pass = prefs.getString("Password", "") ?: ""
+        val e2e = prefs.getBoolean("E2EE", true)
+
+        if (url.isBlank() || user.isBlank() || pass.isBlank()) {
+            updateNotificationContent("未配置服务器账号，请先在应用内填写配置")
+            return
+        }
+
+        engineStarting = true
+        Thread {
+            try {
+                val created = Bridge.newEngine(url, user, pass, e2e)
+                created.setCallback(this)
+                created.start()
+                engine = created
+                updateNotificationContent("已连接到服务器，实时同步中")
+            } catch (e: Exception) {
+                engine = null
+                Log.e(TAG, "Go 引擎启动失败", e)
+                updateNotificationContent("连接失败: ${e.message}")
+            } finally {
+                engineStarting = false
+            }
+        }.start()
     }
 
     // ==================
@@ -290,7 +309,11 @@ class ClipCascadeBackgroundService : Service() /*, MessageCallback*/ {
     override fun onDestroy() {
         Log.i(TAG, "🔴 后台服务被销毁")
         clipboardManager.removePrimaryClipChangedListener(onClipChangeListener)
-        // engine?.stop()
+        try {
+            engine?.stop()
+        } catch (_: Exception) {
+        }
+        engine = null
         removeInvisibleOverlay()
         
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {

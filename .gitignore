@@ -1,5 +1,21 @@
-# Build directory
+# Build outputs
 build/
+
+# Local databases / runtime artifacts
+database/*.db
+
+# Gradle / Android intermediate outputs
+.gradle-user-home/
+mobile/android/.gradle/
+mobile/android/build/
+mobile/android/app/build/
+mobile/android/app/libs/
+mobile/android/local.properties
+
+# Fyne / cross-build temporary outputs
+fyne_mobile/fyne-cross/bin/
+fyne_mobile/fyne-cross/dist/
+fyne_mobile/fyne-cross/tmp/
 
 # macOS
 .DS_Store
@@ -19,5 +35,3 @@ Icon
 Network Trash Folder
 Temporary Items
 .apdisk
-
-# 自定义
