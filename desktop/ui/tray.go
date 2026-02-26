@@ -3,7 +3,6 @@ package ui
 
 import (
 	"log/slog"
-	"strings"
 
 	"github.com/gen2brain/beeep"
 	"github.com/getlantern/systray"
@@ -99,22 +98,17 @@ func (t *Tray) SetStatus(status string) {
 		return
 	}
 
-	s := strings.ToLower(status)
-	isConnected := strings.Contains(s, "connected") && !strings.Contains(s, "disconnected")
-	isBusy := strings.Contains(s, "connecting") || strings.Contains(s, "reconnecting")
-
-	if isConnected {
+	switch status {
+	case "Connected ✓":
 		t.connectItem.Disable()
 		t.disconnectItem.Enable()
-		return
-	}
-	if isBusy {
+	case "Connecting...", "Reconnecting...":
 		t.connectItem.Disable()
 		t.disconnectItem.Disable()
-		return
+	default:
+		t.connectItem.Enable()
+		t.disconnectItem.Disable()
 	}
-	t.connectItem.Enable()
-	t.disconnectItem.Disable()
 }
 
 // Notify 发送桌面通知。

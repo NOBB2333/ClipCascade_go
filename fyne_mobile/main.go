@@ -3,6 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"fyne.io/fyne/v2/layout"
+	"runtime"
+	"strings"
+	"sync"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -153,6 +157,125 @@ func main() {
 		}
 	})
 
+	type historyItem struct {
+		Text      string
+		Direction string
+		At        time.Time
+	}
+
+	historyLimit := 10
+	var historyMu sync.Mutex
+	historyItems := make([]historyItem, 0, 20)
+
+	historyList := widget.NewList(
+		func() int {
+			historyMu.Lock()
+			defer historyMu.Unlock()
+			if len(historyItems) == 0 {
+				return 1
+			}
+			return len(historyItems)
+		},
+		func() fyne.CanvasObject {
+			dir := widget.NewLabel("·")
+			txt := widget.NewLabel("暂无历史记录")
+			txt.Wrapping = fyne.TextWrapOff
+			return container.NewHBox(dir, txt)
+		},
+		func(id widget.ListItemID, obj fyne.CanvasObject) {
+			row := obj.(*fyne.Container)
+			dir := row.Objects[0].(*widget.Label)
+			txt := row.Objects[1].(*widget.Label)
+
+			historyMu.Lock()
+			defer historyMu.Unlock()
+
+			if len(historyItems) == 0 {
+				dir.SetText("·")
+				txt.SetText("暂无历史记录")
+				return
+			}
+			item := historyItems[id]
+			arrow := "↓"
+			if item.Direction == "sent" {
+				arrow = "↑"
+			}
+			dir.SetText(arrow)
+			txt.SetText(fmt.Sprintf("%s  %s", item.At.Format("15:04:05"), item.Text))
+		},
+	)
+	historyScroll := container.NewVScroll(historyList)
+	historyScroll.SetMinSize(fyne.NewSize(0, 160))
+	historyList.OnSelected = func(id widget.ListItemID) {
+		historyMu.Lock()
+		if len(historyItems) == 0 || id < 0 || id >= len(historyItems) {
+			historyMu.Unlock()
+			historyList.Unselect(id)
+			return
+		}
+		text := historyItems[id].Text
+		historyMu.Unlock()
+
+		w.Clipboard().SetContent(text)
+		a.SendNotification(fyne.NewNotification("ClipCascade", "历史内容已写入本机剪贴板"))
+		historyList.Unselect(id)
+	}
+
+	appendHistory := func(text, direction string) {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			return
+		}
+		if len(text) > 160 {
+			text = text[:160] + "..."
+		}
+		line := strings.ReplaceAll(text, "\n", " ")
+
+		historyMu.Lock()
+		if len(historyItems) > 0 && historyItems[0].Text == line && historyItems[0].Direction == direction {
+			historyMu.Unlock()
+			return
+		}
+		historyItems = append([]historyItem{{
+			Text:      line,
+			Direction: direction,
+			At:        time.Now(),
+		}}, historyItems...)
+		if len(historyItems) > historyLimit {
+			historyItems = historyItems[:historyLimit]
+		}
+		historyMu.Unlock()
+		fyne.Do(func() {
+			historyList.Refresh()
+		})
+	}
+
+	applyLimit := func(n int) {
+		historyMu.Lock()
+		historyLimit = n
+		if len(historyItems) > historyLimit {
+			historyItems = historyItems[:historyLimit]
+		}
+		historyMu.Unlock()
+		fyne.Do(func() {
+			historyList.Refresh()
+		})
+	}
+	limit10Btn := widget.NewButton("10", func() { applyLimit(10) })
+	limit20Btn := widget.NewButton("20", func() { applyLimit(20) })
+	clearBtn := widget.NewButton("清空", func() {
+		historyMu.Lock()
+		historyItems = historyItems[:0]
+		historyMu.Unlock()
+		fyne.Do(func() {
+			historyList.Refresh()
+		})
+	})
+
+	sess.SetTextListener(func(text, direction string) {
+		appendHistory(text, direction)
+	})
+
 	titleContainer := container.NewCenter(title)
 
 	// 使用 Grid 确保输入框可以随屏幕宽度自动伸缩拉伸 (特别是在高分辨率及异形屏手机上)
@@ -171,9 +294,21 @@ func main() {
 
 	actionHint := widget.NewLabel("Android 10+ 手动同步时，请将应用保持在前台等待剪贴板读取。")
 	actionHint.Wrapping = fyne.TextWrapWord
-	actionCard := widget.NewCard("操作", "", container.NewGridWithColumns(1,
+	actionCard := widget.NewCard("操作", "", container.NewVBox(
 		actionHint,
 		syncBtn,
+	))
+
+	historyCard := widget.NewCard("历史记录", "点击某条可回填到本机剪贴板", container.NewBorder(
+		container.NewHBox(
+			widget.NewLabel("显示"),
+			limit10Btn,
+			limit20Btn,
+			layout.NewSpacer(),
+			clearBtn,
+		),
+		nil, nil, nil,
+		historyScroll,
 	))
 
 	// 使用 VBox 组合所有的 Card 组件，并用 Padded 增加呼吸感和边距留白
@@ -182,6 +317,7 @@ func main() {
 		configCard,
 		connCard,
 		actionCard,
+		historyCard,
 	))
 
 	w.SetContent(container.NewVScroll(formContent))
@@ -192,22 +328,40 @@ func main() {
 		})
 	})
 
-	// Fyne mobile lifecycle triggers
-	a.Lifecycle().SetOnEnteredForeground(func() {
-		// When app comes to foreground, we could auto-sync if connected
-		if sess.IsConnected() {
-			content := w.Clipboard().Content()
-			if content != "" && content != sess.lastCopied {
-				sess.SendText(content)
+	// 本机剪贴板监听：连接中自动发送，并作为“sent”进入历史记录。
+	lastObservedClipboard := w.Clipboard().Content()
+	go func() {
+		ticker := time.NewTicker(700 * time.Millisecond)
+		defer ticker.Stop()
+		for range ticker.C {
+			content := strings.TrimSpace(w.Clipboard().Content())
+			if content == "" || content == lastObservedClipboard {
+				continue
 			}
+			lastObservedClipboard = content
+			if !sess.IsConnected() {
+				continue
+			}
+			if content == sess.LastCopied() {
+				continue
+			}
+			sess.SendText(content)
 		}
-	})
-	a.Lifecycle().SetOnExitedForeground(func() {
-		state := sess.Status()
-		if sess.IsConnected() || state == "connecting" || state == "reconnecting" {
-			go sess.Disconnect()
-		}
-	})
+	}()
+
+	// 仅在移动端启用前台回到应用时的补偿同步，不在后台主动断开连接。
+	// 目标是尽量保持长连；是否被系统回收由平台策略决定。
+	if runtime.GOOS == "android" || runtime.GOOS == "ios" {
+		a.Lifecycle().SetOnEnteredForeground(func() {
+			// When app comes to foreground, we could auto-sync if connected
+			if sess.IsConnected() {
+				content := w.Clipboard().Content()
+				if content != "" && content != sess.LastCopied() {
+					sess.SendText(content)
+				}
+			}
+		})
+	}
 
 	w.ShowAndRun()
 }

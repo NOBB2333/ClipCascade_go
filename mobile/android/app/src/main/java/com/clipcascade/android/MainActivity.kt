@@ -73,6 +73,7 @@ class MainActivity : Activity() {
 
         setContentView(layout)
         ensureNotificationPermissionIfNeeded()
+        startCoreService()
     }
 
     private fun startCoreService() {

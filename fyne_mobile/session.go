@@ -17,6 +17,7 @@ type Session struct {
 	mu             sync.RWMutex
 	status         string
 	statusListener func(string)
+	textListener   func(string, string)
 }
 
 func NewSession(app fyne.App, w fyne.Window) *Session {
@@ -42,6 +43,18 @@ func (s *Session) Status() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.status
+}
+
+func (s *Session) SetTextListener(listener func(string, string)) {
+	s.mu.Lock()
+	s.textListener = listener
+	s.mu.Unlock()
+}
+
+func (s *Session) LastCopied() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.lastCopied
 }
 
 func (s *Session) setStatus(status string) {
@@ -104,15 +117,18 @@ func (s *Session) IsConnected() bool {
 }
 
 func (s *Session) SendText(text string) {
-	s.mu.RLock()
+	s.mu.Lock()
 	currentEngine := s.engine
-	s.mu.RUnlock()
+	listener := s.textListener
+	s.lastCopied = text
+	s.mu.Unlock()
 
 	if currentEngine != nil {
-		s.lastCopied = text
 		err := currentEngine.SendClipboard(text, "text")
 		if err != nil {
 			log.Println("Send failed:", err)
+		} else if listener != nil {
+			listener(text, "sent")
 		}
 	}
 }
@@ -120,13 +136,23 @@ func (s *Session) SendText(text string) {
 func (s *Session) OnMessage(payload string, payloadType string) {
 	if payloadType == "text" {
 		fyne.Do(func() {
+			s.mu.Lock()
+			last := s.lastCopied
+			listener := s.textListener
+			s.mu.Unlock()
+
 			// 防止死循环：如果本地剪贴板已经是这个内容，则跳过
-			if s.window.Clipboard().Content() == payload || s.lastCopied == payload {
+			if s.window.Clipboard().Content() == payload || last == payload {
 				return
 			}
 			log.Println("Received new text payload from server. Writing to Fyne clipboard.")
+			s.mu.Lock()
 			s.lastCopied = payload
+			s.mu.Unlock()
 			s.window.Clipboard().SetContent(payload)
+			if listener != nil {
+				listener(payload, "received")
+			}
 
 			// Optional: Send a local system notification (requires Fyne's notification API)
 			s.app.SendNotification(fyne.NewNotification("ClipCascade Sync", "New text copied to clipboard!"))

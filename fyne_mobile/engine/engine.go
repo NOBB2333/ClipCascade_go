@@ -95,53 +95,53 @@ func (e *Engine) Start() error {
 
 	// Step 4: Disabling P2P on mobile to bypass Android NDK 1.22+ zoneCache compilation bugs.
 	// STOMP relay will handle all syncing perfectly for mobile.
-	
-	e.connected = true
-	if e.callback != nil {
-		e.callback.OnStatusChange("connected")
-	}
+
+	e.setConnected(true)
+	e.notifyStatus("connected")
+	go e.readLoop()
 	return nil
 }
 
 // Stop 从 server 断开连接。
 func (e *Engine) Stop() {
+	var conn *websocket.Conn
 	e.mu.Lock()
-	defer e.mu.Unlock()
-
 	select {
 	case <-e.done:
 	default:
 		close(e.done)
 	}
 
-	if e.wsConn != nil {
-		disc := protocol.NewFrame("DISCONNECT")
-		e.wsConn.WriteMessage(websocket.TextMessage, disc.Encode())
-		e.wsConn.Close()
-		e.wsConn = nil
-	}
-
+	conn = e.wsConn
+	e.wsConn = nil
 	e.connected = false
-	if e.callback != nil {
-		e.callback.OnStatusChange("disconnected")
+	e.mu.Unlock()
+
+	if conn != nil {
+		_ = conn.WriteMessage(websocket.TextMessage, protocol.NewFrame("DISCONNECT").Encode())
+		_ = conn.Close()
 	}
+	e.notifyStatus("disconnected")
 }
 
 // SendClipboard 向 server 发送剪贴板数据。
 func (e *Engine) SendClipboard(payload string, payloadType string) error {
 	e.mu.Lock()
-	defer e.mu.Unlock()
+	conn := e.wsConn
+	encKey := e.encKey
+	e2ee := e.e2ee
+	e.mu.Unlock()
 
-	if e.wsConn == nil {
+	if conn == nil {
 		return fmt.Errorf("not connected")
 	}
 
 	clipData := &protocol.ClipboardData{Payload: payload, Type: payloadType}
 	var body string
 
-	if e.e2ee && e.encKey != nil {
+	if e2ee && encKey != nil {
 		jsonBytes, _ := clipData.Encode()
-		encrypted, err := pkgcrypto.Encrypt(e.encKey, jsonBytes)
+		encrypted, err := pkgcrypto.Encrypt(encKey, jsonBytes)
 		if err != nil {
 			return err
 		}
@@ -152,13 +152,15 @@ func (e *Engine) SendClipboard(payload string, payloadType string) error {
 	}
 
 	sendFrame := protocol.SendFrame("/app/cliptext", body)
-	err := e.wsConn.WriteMessage(websocket.TextMessage, sendFrame.Encode())
+	err := conn.WriteMessage(websocket.TextMessage, sendFrame.Encode())
 
 	return err
 }
 
 // IsConnected 返回 engine 是否已连接。
 func (e *Engine) IsConnected() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	return e.connected
 }
 
@@ -217,7 +219,6 @@ func (e *Engine) connectWS() error {
 	if err != nil {
 		return err
 	}
-	e.wsConn = conn
 
 	// STOMP handshake
 	conn.WriteMessage(websocket.TextMessage, protocol.ConnectFrame("1.1", "localhost").Encode())
@@ -230,26 +231,46 @@ func (e *Engine) connectWS() error {
 
 	conn.WriteMessage(websocket.TextMessage, protocol.SubscribeFrame("sub-0", "/user/queue/cliptext").Encode())
 
-	go e.readLoop()
+	e.mu.Lock()
+	old := e.wsConn
+	e.wsConn = conn
+	e.mu.Unlock()
+	if old != nil {
+		_ = old.Close()
+	}
 	return nil
 }
 
 func (e *Engine) readLoop() {
 	for {
-		select {
-		case <-e.done:
+		if e.isStopped() {
 			return
-		default:
 		}
 
-		_, msg, err := e.wsConn.ReadMessage()
+		e.mu.Lock()
+		conn := e.wsConn
+		e.mu.Unlock()
+		if conn == nil {
+			if err := e.reconnectLoop(); err != nil {
+				e.notifyStatus("disconnected")
+				return
+			}
+			continue
+		}
+
+		_, msg, err := conn.ReadMessage()
 		if err != nil {
 			log.Println("bridge: ws read error:", err)
-			e.connected = false
-			if e.callback != nil {
-				e.callback.OnStatusChange("disconnected")
+			if e.isStopped() {
+				return
 			}
-			return
+			e.setConnected(false)
+			e.notifyStatus("reconnecting")
+			if rErr := e.reconnectLoop(); rErr != nil {
+				e.notifyStatus("disconnected")
+				return
+			}
+			continue
 		}
 
 		frame, err := protocol.ParseFrame(msg)
@@ -258,6 +279,55 @@ func (e *Engine) readLoop() {
 		}
 
 		e.handleIncomingData(frame.Body)
+	}
+}
+
+func (e *Engine) reconnectLoop() error {
+	backoff := 2 * time.Second
+	for {
+		if e.isStopped() {
+			return fmt.Errorf("stopped")
+		}
+
+		if err := e.login(); err == nil {
+			if !e.e2ee || e.deriveKey() == nil {
+				if err := e.connectWS(); err == nil {
+					e.setConnected(true)
+					e.notifyStatus("connected")
+					return nil
+				}
+			}
+		}
+
+		select {
+		case <-e.done:
+			return fmt.Errorf("stopped")
+		case <-time.After(backoff):
+		}
+		if backoff < 30*time.Second {
+			backoff *= 2
+		}
+	}
+}
+
+func (e *Engine) setConnected(v bool) {
+	e.mu.Lock()
+	e.connected = v
+	e.mu.Unlock()
+}
+
+func (e *Engine) notifyStatus(status string) {
+	if e.callback != nil {
+		e.callback.OnStatusChange(status)
+	}
+}
+
+func (e *Engine) isStopped() bool {
+	select {
+	case <-e.done:
+		return true
+	default:
+		return false
 	}
 }
 

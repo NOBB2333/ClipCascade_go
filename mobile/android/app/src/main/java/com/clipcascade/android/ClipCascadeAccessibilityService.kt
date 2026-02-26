@@ -7,6 +7,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -52,8 +53,13 @@ class ClipCascadeAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         Log.i(TAG, "🚀 ClipCascade 无障碍服务已启动")
         
-        // 绑定后台服务
+        // 先确保后台服务处于运行状态，再绑定
         val intent = Intent(this, ClipCascadeBackgroundService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent)
+        } else {
+            startService(intent)
+        }
         bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
     }
 
