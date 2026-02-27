@@ -49,6 +49,12 @@ func (m *Manager) Init() error {
 	return clipboard.Init()
 }
 
+// CleanupExpiredTempFiles 在启动阶段清理超过保留时长的临时文件。
+func (m *Manager) CleanupExpiredTempFiles() {
+	tempDir := filepath.Join(os.TempDir(), "ClipCascade")
+	cleanupOldTempFiles(tempDir, tempFileRetention)
+}
+
 // OnCopy 设置剪贴板内容更改时的回调。
 func (m *Manager) OnCopy(fn func(payload string, payloadType string, filename string)) {
 	m.onCopy = fn
@@ -99,7 +105,7 @@ func (m *Manager) watchLegacyByChangeCount(ctx context.Context) {
 func (m *Manager) watchEventDriven(ctx context.Context) {
 	textCh := clipboard.Watch(ctx, clipboard.FmtText)
 	imageCh := clipboard.Watch(ctx, clipboard.FmtImage)
-	fileTicker := time.NewTicker(1 * time.Second)   // 文件一秒循环检测一次
+	fileTicker := time.NewTicker(1 * time.Second) // 文件一秒循环检测一次
 	defer fileTicker.Stop()
 
 	// 与旧轮询逻辑保持一致：忽略启动后的首次事件，避免刚连接时回放当前剪贴板。

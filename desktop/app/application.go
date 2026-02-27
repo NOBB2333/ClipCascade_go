@@ -72,6 +72,9 @@ func New(cfg *config.Config) *Application {
 
 // Run 启动 application。在 macOS 上必须从 main goroutine 调用。
 func (a *Application) Run() {
+	// 启动即清理 24 小时前的接收临时文件，避免长期累积。
+	a.clip.CleanupExpiredTempFiles()
+
 	// 设置 tray 回调
 	a.tray.OnConnect(func() {
 		go a.connect()
