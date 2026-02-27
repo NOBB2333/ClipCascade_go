@@ -151,17 +151,35 @@ func (h *WSHub) HandleWebSocket(c *websocket.Conn) {
 			slog.Debug("WS：已订阅", "用户名", username, "订阅ID", subscriptionID)
 
 		case "SEND":
-			// 从 STOMP body 中解析剪贴板数据
+			// 从 STOMP body 中解析剪贴板数据（明文或 E2EE 包装）。
 			var clipData protocol.ClipboardData
 			if err := json.Unmarshal([]byte(frame.Body), &clipData); err != nil {
 				slog.Warn("WS：无效的剪贴板数据", "错误", err)
 				continue
 			}
+
+			msgType := clipData.Type
+			msgSize := sizefmt.HumanSizeFromPayload(clipData.Type, clipData.Payload)
+
+			// E2EE 开启时，body 是加密 JSON 包（nonce/ciphertext/tag），
+			// 直接反序列化到 ClipboardData 会得到空 type/payload。
+			if clipData.Type == "" && clipData.Payload == "" {
+				msgType = "unknown"
+				msgSize = sizefmt.FormatBytes(int64(len(frame.Body)))
+
+				var envelope map[string]json.RawMessage
+				if err := json.Unmarshal([]byte(frame.Body), &envelope); err == nil {
+					if _, ok := envelope["ciphertext"]; ok {
+						msgType = "e2ee_envelope"
+					}
+				}
+			}
+
 			slog.Info(
 				"WS：收到剪贴板发送请求",
 				"用户名", username,
-				"类型", clipData.Type,
-				"体积", sizefmt.HumanSizeFromPayload(clipData.Type, clipData.Payload),
+				"类型", msgType,
+				"体积", msgSize,
 			)
 
 			// 包装在 MESSAGE 帧中进行交付
