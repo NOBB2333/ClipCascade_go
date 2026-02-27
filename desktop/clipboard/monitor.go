@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -61,47 +62,99 @@ func (m *Manager) SetNotifier(fn func(title, message string)) {
 // Watch 开始监控剪贴板变更。
 // 它通过轮询系统底层的变更计数器（SequenceNumber/ChangeCount）来实现零 CGO 的事件驱动模拟。
 func (m *Manager) Watch(ctx context.Context) {
+	// macOS / Linux: 文本和图片采用事件监听；文件保持 1s 轮询兜底。
+	if runtime.GOOS == "darwin" || runtime.GOOS == "linux" {
+		go m.watchEventDriven(ctx)
+		return
+	}
+
+	// 其他平台（Windows）保持原有变更计数轮询策略。
+	go m.watchLegacyByChangeCount(ctx)
+}
+
+func (m *Manager) watchLegacyByChangeCount(ctx context.Context) {
 	var lastCount int64 = -1
 
-	go func() {
-		ticker := time.NewTicker(500 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				count := getPlatformChangeCount()
-				if count == lastCount {
-					continue
-				}
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			count := getPlatformChangeCount()
+			if count == lastCount {
+				continue
+			}
 
-				// 只有在初始启动后的第一次变化才处理，或者计数器确实发生了位移
-				if lastCount != -1 {
-					m.handleSystemChange()
-				}
-				lastCount = count
+			// 只有在初始启动后的第一次变化才处理，或者计数器确实发生了位移
+			if lastCount != -1 {
+				m.handleSystemChange()
+			}
+			lastCount = count
+		}
+	}
+}
+
+func (m *Manager) watchEventDriven(ctx context.Context) {
+	textCh := clipboard.Watch(ctx, clipboard.FmtText)
+	imageCh := clipboard.Watch(ctx, clipboard.FmtImage)
+	fileTicker := time.NewTicker(1 * time.Second)   // 文件一秒循环检测一次
+	defer fileTicker.Stop()
+
+	// 与旧轮询逻辑保持一致：忽略启动后的首次事件，避免刚连接时回放当前剪贴板。
+	skipFirstTextEvent := true
+	skipFirstImageEvent := true
+	skipFirstFileTick := true
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-fileTicker.C:
+			if skipFirstFileTick {
+				skipFirstFileTick = false
+				continue
+			}
+			m.handleFileChange()
+		case data, ok := <-textCh:
+			if !ok {
+				textCh = nil
+				continue
+			}
+			if skipFirstTextEvent {
+				skipFirstTextEvent = false
+				continue
+			}
+			// 保持文件优先级：如果当前是文件剪贴板，优先走文件链路。
+			if m.handleFileChange() {
+				continue
+			}
+			if len(data) > 0 {
+				m.handleChange(string(data), constants.TypeText, "")
+			}
+		case data, ok := <-imageCh:
+			if !ok {
+				imageCh = nil
+				continue
+			}
+			if skipFirstImageEvent {
+				skipFirstImageEvent = false
+				continue
+			}
+			if m.handleFileChange() {
+				continue
+			}
+			if len(data) > 0 {
+				m.handleChange(base64.StdEncoding.EncodeToString(data), constants.TypeImage, "")
 			}
 		}
-	}()
+	}
 }
 
 // handleSystemChange 当检测到系统剪贴板变动时，按严格的物理优先级尝试读取。
 func (m *Manager) handleSystemChange() {
-	// 优先级 1: 文件 (CF_HDROP / Mac Class furl / Linux uri-list)
-	paths, _ := getPlatformFilePaths()
-	if len(paths) > 0 {
-		// 单文件且大小可控时，使用 eager 直传保证跨端可粘贴。
-		if len(paths) == 1 {
-			if payload, name, ok := buildFileEagerPayload(paths[0]); ok {
-				m.handleChange(payload, constants.TypeFileEager, name)
-				return
-			}
-		}
-		// 其余情况走懒加载占位符（多文件/超大文件）。
-		payload := buildFileStubPayload(paths)
-		meta := buildFileStubMeta(paths)
-		m.handleChange(payload, constants.TypeFileStub, meta)
+	if m.handleFileChange() {
 		return
 	}
 
@@ -116,6 +169,26 @@ func (m *Manager) handleSystemChange() {
 		m.handleChange(string(data), constants.TypeText, "")
 		return
 	}
+}
+
+func (m *Manager) handleFileChange() bool {
+	// 优先级 1: 文件 (CF_HDROP / Mac Class furl / Linux uri-list)
+	paths, _ := getPlatformFilePaths()
+	if len(paths) > 0 {
+		// 单文件且大小可控时，使用 eager 直传保证跨端可粘贴。
+		if len(paths) == 1 {
+			if payload, name, ok := buildFileEagerPayload(paths[0]); ok {
+				m.handleChange(payload, constants.TypeFileEager, name)
+				return true
+			}
+		}
+		// 其余情况走懒加载占位符（多文件/超大文件）。
+		payload := buildFileStubPayload(paths)
+		meta := buildFileStubMeta(paths)
+		m.handleChange(payload, constants.TypeFileStub, meta)
+		return true
+	}
+	return false
 }
 
 // handleChange 处理剪贴板更改事件。
