@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -176,17 +177,28 @@ func uniqueUploadPath(dir, fileName string) string {
 }
 
 func main() {
+	// 默认路径基于二进制所在目录，避免相对路径混乱
+	exeDir := func() string {
+		exe, err := os.Executable()
+		if err != nil {
+			return "."
+		}
+		return filepath.Dir(exe)
+	}()
+
 	dbPath := strings.TrimSpace(os.Getenv("WEBCLIP_DB_PATH"))
 	if dbPath == "" {
-		dbPath = "data.db"
+		dbPath = filepath.Join(exeDir, "data.db")
 	}
 	uploadDir := strings.TrimSpace(os.Getenv("WEBCLIP_UPLOAD_DIR"))
 	if uploadDir == "" {
-		uploadDir = "./uploads"
+		uploadDir = filepath.Join(exeDir, "uploads")
 	}
-	port := strings.TrimSpace(os.Getenv("WEBCLIP_PORT"))
-	if port == "" {
-		port = "8090"
+	startPort := 8090
+	if p := strings.TrimSpace(os.Getenv("WEBCLIP_PORT")); p != "" {
+		if n, err := strconv.Atoi(p); err == nil {
+			startPort = n
+		}
 	}
 
 	if err := initDB(dbPath); err != nil {
@@ -195,6 +207,9 @@ func main() {
 	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
 		log.Fatal("create upload dir:", err)
 	}
+
+	fmt.Printf("\n  database : %s\n", dbPath)
+	fmt.Printf("  uploads  : %s\n\n", uploadDir)
 
 	engine := html.NewFileSystem(http.FS(templatesFS), ".html")
 	engine.AddFunc("add", func(a, b int) int { return a + b })
@@ -272,6 +287,7 @@ func main() {
 		if err := c.SaveFile(fh, uniqueUploadPath(uploadDir, name)); err != nil {
 			return c.Status(500).SendString("upload failed")
 		}
+		fmt.Printf("[upload] %s  size=%d bytes  from=%s\n", name, fh.Size, c.IP())
 		return c.Redirect("/")
 	})
 
@@ -384,6 +400,22 @@ func main() {
 		return c.Redirect("/manage")
 	})
 
-	log.Printf("server-web-clip listening on :%s", port)
-	log.Fatal(app.Listen(":" + port))
+	// 端口自增：如果目标端口被占用，自动往后找
+	port := startPort
+	var ln net.Listener
+	for {
+		l, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+		if err == nil {
+			ln = l
+			break
+		}
+		fmt.Printf("[warn] port %d in use, trying %d\n", port, port+1)
+		port++
+		if port > startPort+100 {
+			log.Fatal("no available port found")
+		}
+	}
+
+	fmt.Printf("  ➜  http://localhost:%d/\n\n", port)
+	log.Fatal(app.Listener(ln))
 }
