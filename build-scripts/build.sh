@@ -99,6 +99,27 @@ build_server_cross() {
     info "✅ 服务端交叉编译完成"
 }
 
+build_web_clip() {
+    info "正在构建 Web 剪贴板 (本地平台)..."
+    cd "$ROOT_DIR/server-web-clip"
+    CGO_ENABLED=0 go build -ldflags="$LDFLAGS" -o "$BUILD_DIR/clipcascade-web" .
+    info "✅ Web 剪贴板构建成功 → $BUILD_DIR/clipcascade-web"
+}
+
+build_web_clip_cross() {
+    info "正在为所有平台交叉编译 Web 剪贴板 (纯 Go)..."
+    cd "$ROOT_DIR/server-web-clip"
+    local platforms=("linux/amd64" "linux/arm64" "darwin/amd64" "darwin/arm64" "windows/amd64")
+    for p in "${platforms[@]}"; do
+        local os="${p%/*}" arch="${p#*/}"
+        local ext=""
+        [[ "$os" == "windows" ]] && ext=".exe"
+        info "  → 编译中: $os/$arch"
+        CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -ldflags="$LDFLAGS" -o "$BUILD_DIR/clipcascade-web-${os}-${arch}${ext}" .
+    done
+    info "✅ Web 剪贴板交叉编译完成"
+}
+
 build_desktop() {
     info "正在构建桌面客户端 (本地平台)..."
     cd "$ROOT_DIR/client-desktop"
@@ -259,7 +280,7 @@ build_docker() {
 
 tidy() {
     info "清理模块依赖..."
-    for d in core server client-desktop; do
+    for d in core server client-desktop server-web-clip; do
         if [ -d "$ROOT_DIR/$d" ]; then
             cd "$ROOT_DIR/$d" && go mod tidy
         fi
@@ -307,13 +328,16 @@ for target in "$@"; do
         desktop)          build_desktop ;;
         desktop-ui)       build_desktop_ui ;;
         desktop-ui-cross) build_desktop_ui_cross ;;
-        cross)            build_server_cross; build_desktop_cross; build_desktop_ui_cross || warn "cross 某些目标构建失败，已继续" ;;
+        web-clip)         build_web_clip ;;
+        web-clip-cross)   build_web_clip_cross ;;
+        cross)            build_server_cross; build_desktop_cross; build_desktop_ui_cross; build_web_clip_cross || warn "cross 某些目标构建失败，已继续" ;;
         mobile-android-native) build_mobile_android_native ;;
         docker)           build_docker ;;
         all)              build_server_cross || warn "server-cross 构建失败";
                           build_desktop_cross || warn "desktop-cross 构建失败";
                           build_desktop_ui || warn "desktop-ui 构建失败";
-                          build_desktop_ui_cross || warn "desktop-ui-cross 构建失败" ;;
+                          build_desktop_ui_cross || warn "desktop-ui-cross 构建失败";
+                          build_web_clip_cross || warn "web-clip-cross 构建失败" ;;
         tidy)           tidy ;;
         clean)          clean ;;
         *)              show_help; exit 1 ;;

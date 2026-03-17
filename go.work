@@ -5,4 +5,5 @@ use (
 	./client-mobile
 	./core
 	./server
+	./server-web-clip
 )
