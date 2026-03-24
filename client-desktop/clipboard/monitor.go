@@ -68,8 +68,15 @@ func (m *Manager) SetNotifier(fn func(title, message string)) {
 // Watch 开始监控剪贴板变更。
 // 它通过轮询系统底层的变更计数器（SequenceNumber/ChangeCount）来实现零 CGO 的事件驱动模拟。
 func (m *Manager) Watch(ctx context.Context) {
+	// macOS: 避开 golang.design/x/clipboard 的 Darwin watcher/read 实现，
+	// 统一使用 changeCount 轮询 + 原生 NSPasteboard 读取，避免后台 cgo 读崩溃。
+	if runtime.GOOS == "darwin" {
+		go m.watchLegacyByChangeCount(ctx)
+		return
+	}
+
 	// macOS / Linux: 文本和图片采用事件监听；文件保持 1s 轮询兜底。
-	if runtime.GOOS == "darwin" || runtime.GOOS == "linux" {
+	if runtime.GOOS == "linux" {
 		go m.watchEventDriven(ctx)
 		return
 	}
@@ -164,6 +171,19 @@ func (m *Manager) handleSystemChange() {
 		return
 	}
 
+	if runtime.GOOS == "darwin" {
+		if data, _ := getPlatformImage(); len(data) > 0 {
+			m.handleChange(base64.StdEncoding.EncodeToString(data), constants.TypeImage, "")
+			return
+		}
+
+		if data, _ := getPlatformText(); len(data) > 0 {
+			m.handleChange(string(data), constants.TypeText, "")
+			return
+		}
+		return
+	}
+
 	// 优先级 2: 图像
 	if data := clipboard.Read(clipboard.FmtImage); len(data) > 0 {
 		m.handleChange(base64.StdEncoding.EncodeToString(data), constants.TypeImage, "")
@@ -236,7 +256,14 @@ func (m *Manager) Paste(payload string, payloadType string, filename string) {
 
 	switch payloadType {
 	case constants.TypeText:
-		clipboard.Write(clipboard.FmtText, []byte(payload))
+		if runtime.GOOS == "darwin" {
+			if err := setPlatformText(payload); err != nil {
+				slog.Warn("剪贴板：无法写入文本到系统剪贴板", "错误", err)
+				return
+			}
+		} else {
+			clipboard.Write(clipboard.FmtText, []byte(payload))
+		}
 		slog.Debug("剪贴板：已粘贴文本", "大小", len(payload))
 		if m.notifier != nil {
 			m.notifier("ClipCascade", fmt.Sprintf("收到文本剪贴板更新 (%s)", sizefmt.FormatBytes(int64(len(payload)))))
@@ -247,7 +274,14 @@ func (m *Manager) Paste(payload string, payloadType string, filename string) {
 			slog.Warn("剪贴板：无法解码图像", "错误", err)
 			return
 		}
-		clipboard.Write(clipboard.FmtImage, data)
+		if runtime.GOOS == "darwin" {
+			if err := setPlatformImage(data); err != nil {
+				slog.Warn("剪贴板：无法写入图像到系统剪贴板", "错误", err)
+				return
+			}
+		} else {
+			clipboard.Write(clipboard.FmtImage, data)
+		}
 		slog.Debug("剪贴板：已粘贴图像", "大小", len(data))
 		if m.notifier != nil {
 			m.notifier("ClipCascade", fmt.Sprintf("收到图片剪贴板更新 (%s)", sizefmt.FormatBytes(int64(len(data)))))
