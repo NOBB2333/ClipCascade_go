@@ -2,10 +2,17 @@
 package clipboard
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/draw"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -184,6 +191,18 @@ func (m *Manager) handleSystemChange() {
 		return
 	}
 
+	if runtime.GOOS == "windows" {
+		if data, _ := getPlatformImage(); len(data) > 0 {
+			m.handleChange(base64.StdEncoding.EncodeToString(data), constants.TypeImage, "")
+			return
+		}
+
+		if data, _ := getPlatformText(); len(data) > 0 {
+			m.handleChange(string(data), constants.TypeText, "")
+			return
+		}
+	}
+
 	// 优先级 2: 图像
 	if data := clipboard.Read(clipboard.FmtImage); len(data) > 0 {
 		m.handleChange(base64.StdEncoding.EncodeToString(data), constants.TypeImage, "")
@@ -223,7 +242,7 @@ func (m *Manager) handleChange(payload string, payloadType string, filename stri
 	defer m.mu.Unlock()
 
 	// 统一使用 xxHash 检查内容是否确实发生实质性更改（防止自身 Paste 死循环）
-	hash := pkgcrypto.XXHash64(payload)
+	hash := contentHash(payload, payloadType)
 	if hash == m.lastHash {
 		return
 	}
@@ -251,7 +270,7 @@ func (m *Manager) handleChange(payload string, payloadType string, filename stri
 // Paste sets the clipboard content. Updates lastHash to securely prevent self-trigger loop echoing.
 func (m *Manager) Paste(payload string, payloadType string, filename string) {
 	m.mu.Lock()
-	m.lastHash = pkgcrypto.XXHash64(payload)
+	m.lastHash = contentHash(payload, payloadType)
 	m.mu.Unlock()
 
 	switch payloadType {
@@ -324,6 +343,34 @@ func (m *Manager) Paste(payload string, payloadType string, filename string) {
 	default:
 		slog.Warn("剪贴板：不支持的数据类型", "类型", payloadType)
 	}
+}
+
+func contentHash(payload string, payloadType string) uint64 {
+	if payloadType != constants.TypeImage {
+		return pkgcrypto.XXHash64(payload)
+	}
+
+	data, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil || len(data) == 0 {
+		return pkgcrypto.XXHash64(payload)
+	}
+
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return pkgcrypto.XXHash64Bytes(data)
+	}
+
+	bounds := img.Bounds()
+	rgba := image.NewNRGBA(bounds)
+	draw.Draw(rgba, bounds, img, bounds.Min, draw.Src)
+
+	hasher := pkgcrypto.NewXXHash64()
+	var dims [16]byte
+	binary.BigEndian.PutUint64(dims[:8], uint64(bounds.Dx()))
+	binary.BigEndian.PutUint64(dims[8:], uint64(bounds.Dy()))
+	_, _ = hasher.Write(dims[:])
+	_, _ = hasher.Write(rgba.Pix)
+	return hasher.Sum64()
 }
 
 func buildFileStubPayload(paths []string) string {

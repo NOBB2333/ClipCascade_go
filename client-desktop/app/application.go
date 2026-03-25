@@ -75,6 +75,16 @@ func (a *Application) Run() {
 	// 启动即清理 24 小时前的接收临时文件，避免长期累积。
 	a.clip.CleanupExpiredTempFiles()
 
+	if err := a.clip.Init(); err != nil {
+		slog.Error("clipboard init failed", "error", err)
+		a.tray.SetStatus("Clipboard Error")
+		return
+	}
+	a.clip.OnCopy(a.onCopy)
+	a.clip.Watch(a.ctx)
+
+	go a.monitorConnection()
+
 	// 设置 tray 回调
 	a.tray.OnConnect(func() {
 		go a.connect()
@@ -269,22 +279,9 @@ func (a *Application) connect() {
 		}
 	}
 
-	// Step 5: Initialize clipboard monitoring
-	if err := a.clip.Init(); err != nil {
-		slog.Error("clipboard init failed", "error", err)
-		a.tray.SetStatus("Clipboard Error")
-		return
-	}
-
-	a.clip.OnCopy(a.onCopy)
-	a.clip.Watch(a.ctx)
-
 	a.tray.SetStatus("Connected ✓")
 	ui.Notify("ClipCascade", "Connected to server as "+a.cfg.Username)
 	slog.Info("应用：已连接并开始监控剪贴板")
-
-	// Start reconnect monitor
-	go a.monitorConnection()
 }
 
 // login 执行基于 HTTP 表单的 login 并返回 session cookies。
@@ -440,7 +437,7 @@ func (a *Application) onReceive(body string) {
 
 // monitorConnection 检查连接健康状况并触发重连。
 func (a *Application) monitorConnection() {
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -456,7 +453,7 @@ func (a *Application) monitorConnection() {
 	}
 }
 
-// reconnectLoop tries to reconnect with exponential backoff and jitter.
+// reconnectLoop 会立即发起第一次重连尝试；失败后继续指数退避。
 func (a *Application) reconnectLoop() {
 	if !a.cfg.AutoReconnect {
 		return
@@ -476,29 +473,27 @@ func (a *Application) reconnectLoop() {
 
 	failCount := 0
 	for {
+		wait := time.Duration(0)
+		if failCount > 0 {
+			wait = delay
+		}
 		select {
 		case <-a.ctx.Done():
 			return
-		case <-time.After(delay):
-			failCount++
-			slog.Info("应用：正在尝试重连", "延迟", delay, "失败次数", failCount)
-
-			// 如果连续失败多次，或者间隔已经拉得很大，尝试重新发现服务器
-			if failCount%3 == 0 {
-				slog.Info("应用：重连多次失败，尝试局域网重新探测服务器列表...")
-				discovered, err := a.discoverServer()
-				if err == nil && len(discovered) > 0 {
-					// 这里只需标记可能需要尝试新地址，后续 connect() 会处理 urlsToTry
-					slog.Info("应用：探测到局域网活跃服务器候选", "数量", len(discovered))
-				}
-			}
-
-			a.connect()
-			if a.stomp != nil && a.stomp.IsConnected() {
-				return // reconnected
-			}
-			delay = min(delay*2, maxDelay)
+		case <-time.After(wait):
 		}
+
+		failCount++
+		slog.Info("应用：正在尝试重连", "延迟", wait, "失败次数", failCount)
+
+		// 先销毁旧传输对象，再按原始 connect 流程重建新的连接。
+		a.closeTransports()
+		a.connect()
+		if a.stomp != nil && a.stomp.IsConnected() {
+			return // reconnected
+		}
+
+		delay = min(delay*2, maxDelay)
 	}
 }
 
@@ -526,14 +521,7 @@ func (a *Application) isReconnecting() bool {
 
 // disconnect disconnects from the server.
 func (a *Application) disconnect() {
-	if a.stomp != nil {
-		a.stomp.Close()
-		a.stomp = nil
-	}
-	if a.p2p != nil {
-		a.p2p.Close()
-		a.p2p = nil
-	}
+	a.closeTransports()
 	a.tray.SetStatus("Disconnected")
 	ui.Notify("ClipCascade", "Disconnected from server")
 	slog.Info("应用：已断开连接")
@@ -544,4 +532,15 @@ func (a *Application) shutdown() {
 	a.disconnect()
 	a.cancel()
 	slog.Info("应用：正在关闭")
+}
+
+func (a *Application) closeTransports() {
+	if a.stomp != nil {
+		a.stomp.Close()
+		a.stomp = nil
+	}
+	if a.p2p != nil {
+		a.p2p.Close()
+		a.p2p = nil
+	}
 }
