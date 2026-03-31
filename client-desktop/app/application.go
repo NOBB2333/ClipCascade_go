@@ -350,6 +350,10 @@ func (a *Application) onCopy(payload string, payloadType string, filename string
 	if a.stomp == nil || !a.stomp.IsConnected() {
 		return
 	}
+	if !a.allowSendType(payloadType) {
+		slog.Debug("应用：按发送过滤规则跳过", "类型", payloadType, "文件名", filename)
+		return
+	}
 	slog.Info("应用：准备发送剪贴板更新", "类型", payloadType, "大小", sizefmt.HumanSizeFromPayload(payloadType, payload))
 
 	// Build ClipboardData
@@ -382,6 +386,20 @@ func (a *Application) onCopy(payload string, payloadType string, filename string
 	// 也通过 P2P 发送（如果可用）
 	if a.p2p != nil {
 		a.p2p.Send(body)
+	}
+}
+
+func (a *Application) allowSendType(payloadType string) bool {
+	switch payloadType {
+	case constants.TypeText:
+		return a.cfg.SendText
+	case constants.TypeImage:
+		return a.cfg.SendImage
+	case constants.TypeFileStub, constants.TypeFileEager, constants.TypeFiles:
+		return a.cfg.SendFile
+	default:
+		// 未知类型默认允许，避免未来协议类型被静默吞掉。
+		return true
 	}
 }
 

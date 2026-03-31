@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/clipcascade/desktop/app"
 	"github.com/clipcascade/desktop/config"
@@ -20,6 +21,7 @@ func main() {
 	username := flag.String("username", "", "Login username")
 	password := flag.String("password", "", "Login password")
 	noE2EE := flag.Bool("no-e2ee", false, "Disable end-to-end encryption")
+	sendFilter := flag.String("send-filter", "all", "One-shot send filter: all|none|text|image|file or comma list like text,file")
 	saveConfig := flag.Bool("save", false, "Save provided flags to config file")
 	debugLog := flag.Bool("debug", false, "Enable debug logging")
 	flag.Parse()
@@ -49,6 +51,15 @@ func main() {
 	if *noE2EE {
 		cfg.E2EEEnabled = false
 	}
+
+	sendText, sendImage, sendFile, err := parseSendFilter(*sendFilter)
+	if err != nil {
+		slog.Error("invalid --send-filter", "value", *sendFilter, "error", err)
+		os.Exit(2)
+	}
+	cfg.SendText = sendText
+	cfg.SendImage = sendImage
+	cfg.SendFile = sendFile
 
 	// 如果有请求，则保存 config
 	if *saveConfig {
@@ -86,9 +97,44 @@ func main() {
 		"server", cfg.ServerURL,
 		"user", cfg.Username,
 		"e2ee", cfg.E2EEEnabled,
+		"send_text", cfg.SendText,
+		"send_image", cfg.SendImage,
+		"send_file", cfg.SendFile,
 	)
 
 	// 创建并运行 application (在通过 tray 退出前保持阻塞)
 	application := app.New(cfg)
 	application.Run()
+}
+
+func parseSendFilter(raw string) (sendText bool, sendImage bool, sendFile bool, err error) {
+	v := strings.TrimSpace(strings.ToLower(raw))
+	if v == "" || v == "all" {
+		return true, true, true, nil
+	}
+	if v == "none" {
+		return false, false, false, nil
+	}
+
+	seen := map[string]bool{}
+	for _, part := range strings.Split(v, ",") {
+		token := strings.TrimSpace(part)
+		if token == "" {
+			continue
+		}
+		seen[token] = true
+	}
+	if len(seen) == 0 {
+		return false, false, false, fmt.Errorf("empty filter")
+	}
+	for token := range seen {
+		switch token {
+		case "text":
+		case "image":
+		case "file":
+		default:
+			return false, false, false, fmt.Errorf("unsupported token %q", token)
+		}
+	}
+	return seen["text"], seen["image"], seen["file"], nil
 }

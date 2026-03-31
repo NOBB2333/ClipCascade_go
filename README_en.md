@@ -216,6 +216,14 @@ Debug logging:
 ./build/clipcascade-desktop-darwin-arm64 --debug
 ```
 
+One-shot send filter (runtime-only, not persisted to config):
+
+```bash
+./build/clipcascade-desktop-darwin-arm64 --send-filter=text,file
+```
+
+`--send-filter` values: `all` (default), `none`, `text`, `image`, `file`, with comma combinations like `text,file`.
+
 ## User Management
 
 - Default `signup` is disabled.

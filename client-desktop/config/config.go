@@ -23,6 +23,9 @@ type Config struct {
 	StunURL        string `json:"stun_url"`
 	AutoReconnect  bool   `json:"auto_reconnect"`
 	ReconnectDelay int    `json:"reconnect_delay_sec"` // seconds
+	SendText       bool   `json:"-"`                   // 运行期发送过滤：文本
+	SendImage      bool   `json:"-"`                   // 运行期发送过滤：图片
+	SendFile       bool   `json:"-"`                   // 运行期发送过滤：文件
 	FilePath       string `json:"-"`                   // config 文件路径，不序列化
 }
 
@@ -37,6 +40,9 @@ func DefaultConfig() *Config {
 		StunURL:        constants.DefaultStunURL,
 		AutoReconnect:  true,
 		ReconnectDelay: constants.DefaultReconnectDelay,
+		SendText:       true,
+		SendImage:      true,
+		SendFile:       true,
 	}
 }
 
