@@ -224,6 +224,13 @@ One-shot send filter (runtime-only, not persisted to config):
 
 `--send-filter` values: `all` (default), `none`, `text`, `image`, `file`, with comma combinations like `text,file`.
 
+Log size semantics (client vs server):
+
+- With E2EE enabled (default), client-side `size` logs represent estimated plaintext payload size.
+- In E2EE mode, server-side `volume` usually reflects encrypted frame body (wire body) size.
+- So the same message can show different numbers on client and server; this is expected.
+- With E2EE disabled, the two sides are more likely to show close size values.
+
 ## User Management
 
 - Default `signup` is disabled.
