@@ -56,6 +56,7 @@ const (
 	TypeImage       = "image"
 	TypeFileStub    = "file_stub"
 	TypeFileEager   = "file_eager"
+	TypeFileOffer   = "file_offer"
 	TypeFileRequest = "file_request"
 	// TypeFiles 保留兼容旧代码，建议使用 TypeFileStub。
 	TypeFiles = "files"
@@ -71,6 +72,15 @@ const (
 	DefaultPort = 8080
 	// DefaultMaxMessageSizeMiB 是服务器处理的默认最大消息大小 (单位: MiB)。
 	DefaultMaxMessageSizeMiB = 20
+	// DefaultFileEagerThresholdBytes 是桌面端仍采用 base64 直传（TypeFileEager via STOMP）的文件上限。
+	// 超过此阈值的文件改走 HTTP relay。base64 编码后约为原始大小的 1.33 倍，
+	// 8 MiB 文件 base64 后约 10.7 MiB，低于服务器 20 MiB 消息上限。
+	DefaultFileEagerThresholdBytes int64 = 8 * 1024 * 1024
+	// DefaultFileAutoRelayMaxBytes 是 HTTP relay 自动同步的文件大小上限（25 MiB）。
+	// 超过此大小的文件不会自动传输，仅发送 TypeFileStub 占位通知。
+	DefaultFileAutoRelayMaxBytes int64 = 25 * 1024 * 1024
+	// DefaultFileRelayMaxBytes 是 HTTP 文件中转服务端允许的单文件最大大小。
+	DefaultFileRelayMaxBytes int64 = 2 * 1024 * 1024 * 1024
 	// DefaultSessionTimeoutMin 是默认用户会话有效期 (约 1 年)。
 	DefaultSessionTimeoutMin = 525960
 	// DefaultMaxUniqueIPAttempts 是允许的同一 IP 对应的最大唯一 IP 尝试次数。

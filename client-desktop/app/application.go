@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +24,7 @@ import (
 
 	"github.com/clipcascade/desktop/clipboard"
 	"github.com/clipcascade/desktop/config"
+	"github.com/clipcascade/desktop/transfer"
 	"github.com/clipcascade/desktop/transport"
 	"github.com/clipcascade/desktop/ui"
 	"github.com/grandcat/zeroconf"
@@ -29,18 +32,20 @@ import (
 
 // Application 是主要的 desktop client 控制器。
 type Application struct {
-	cfg          *config.Config
-	httpClient   *http.Client
-	stomp        *transport.StompClient
-	p2p          *transport.P2PClient
-	clip         *clipboard.Manager
-	tray         *ui.Tray
-	ctx          context.Context
-	cancel       context.CancelFunc
-	encKey       []byte // 从 password 派生的 AES-256-GCM 密钥
-	reconnecting bool
-	connecting   bool // 防止用户重复点击连接产生并发泄漏
-	connMu       sync.Mutex
+	cfg            *config.Config
+	httpClient     *http.Client // 通用 HTTP 客户端，15s 超时（登录/认证）
+	fileHTTPClient *http.Client // 文件传输专用，无超时（大文件上传/下载）
+	stomp          *transport.StompClient
+	p2p            *transport.P2PClient
+	clip           *clipboard.Manager
+	tray           *ui.Tray
+	transferMgr    *transfer.Manager
+	ctx            context.Context
+	cancel         context.CancelFunc
+	encKey         []byte // 从 password 派生的 AES-256-GCM 密钥
+	reconnecting   bool
+	connecting     bool // 防止用户重复点击连接产生并发泄漏
+	connMu         sync.Mutex
 
 	lastRecvMu   sync.Mutex
 	lastRecvHash string
@@ -66,6 +71,15 @@ func New(cfg *config.Config) *Application {
 			},
 		},
 	}
+	// 文件传输专用客户端：共享 cookie jar，但无超时限制（大文件可能耗时数分钟）。
+	app.fileHTTPClient = &http.Client{
+		Jar:     jar,
+		Timeout: 0,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	app.transferMgr = transfer.NewManager(app.tray.SetStatus, ui.Notify)
 	app.clip.SetNotifier(ui.Notify)
 	return app
 }
@@ -355,38 +369,47 @@ func (a *Application) onCopy(payload string, payloadType string, filename string
 		return
 	}
 	slog.Info("应用：准备发送剪贴板更新", "类型", payloadType, "大小", sizefmt.HumanSizeFromPayload(payloadType, payload))
+	if payloadType == constants.TypeFileStub && a.tryRelayLargeFile(payload) {
+		return
+	}
 
-	// Build ClipboardData
 	clipData := &protocol.ClipboardData{
 		Payload:  payload,
 		Type:     payloadType,
 		FileName: filename,
 	}
+	body, err := a.encodeClipboardData(clipData)
+	if err != nil {
+		slog.Error("编码失败", "错误", err)
+		return
+	}
+	if err := a.sendEncodedBody(body); err != nil {
+		slog.Error("发送失败", "错误", err)
+		return
+	}
+}
 
-	// Encrypt if E2EE enabled
-	var body string
+func (a *Application) sendEncodedBody(body string) error {
+	if err := a.stomp.Send(body); err != nil {
+		return err
+	}
+	if a.p2p != nil {
+		a.p2p.Send(body)
+	}
+	return nil
+}
+
+func (a *Application) encodeClipboardData(clipData *protocol.ClipboardData) (string, error) {
 	if a.cfg.E2EEEnabled && a.encKey != nil {
 		jsonBytes, _ := clipData.Encode()
 		encrypted, err := pkgcrypto.Encrypt(a.encKey, jsonBytes)
 		if err != nil {
-			slog.Error("加密失败", "错误", err)
-			return
+			return "", err
 		}
-		body, _ = pkgcrypto.EncodeToJSONString(encrypted)
-	} else {
-		jsonBytes, _ := clipData.Encode()
-		body = string(jsonBytes)
+		return pkgcrypto.EncodeToJSONString(encrypted)
 	}
-
-	if err := a.stomp.Send(body); err != nil {
-		slog.Error("发送失败", "错误", err)
-		return
-	}
-
-	// 也通过 P2P 发送（如果可用）
-	if a.p2p != nil {
-		a.p2p.Send(body)
-	}
+	jsonBytes, _ := clipData.Encode()
+	return string(jsonBytes), nil
 }
 
 func (a *Application) allowSendType(payloadType string) bool {
@@ -449,8 +472,122 @@ func (a *Application) onReceive(body string) {
 
 	// Paste to local clipboard
 	slog.Info("应用：收到剪贴板更新", "类型", clipData.Type, "大小", sizefmt.HumanSizeFromPayload(clipData.Type, clipData.Payload))
+	if clipData.Type == constants.TypeFileOffer {
+		go a.handleFileOffer(clipData)
+		return
+	}
 	a.clip.Paste(clipData.Payload, clipData.Type, clipData.FileName)
 	slog.Debug("应用：已接收并粘贴", "类型", clipData.Type, "大小", len(clipData.Payload))
+}
+
+// tryRelayLargeFile 检查 payload 是否为单个大文件，若是则在后台 goroutine 中
+// 异步上传并广播 FileOffer，返回 true 表示已接管（onCopy 无需再走 STOMP）。
+// 检查本身是同步的（只做 Stat），不会阻塞剪贴板监控 goroutine。
+func (a *Application) tryRelayLargeFile(payload string) bool {
+	paths := make([]string, 0, 1)
+	for _, line := range strings.Split(payload, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			paths = append(paths, line)
+		}
+	}
+	if len(paths) != 1 {
+		return false
+	}
+	path := paths[0]
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	if info.Size() <= constants.DefaultFileEagerThresholdBytes {
+		return false
+	}
+	if info.Size() > constants.DefaultFileAutoRelayMaxBytes {
+		return false
+	}
+	go a.relayLargeFile(path, info.Size())
+	return true
+}
+
+func (a *Application) relayLargeFile(path string, fileSize int64) {
+	transferID := fmt.Sprintf("upload-%d", time.Now().UnixNano())
+	a.transferMgr.Start(transferID, transfer.DirectionUpload, filepath.Base(path), fileSize)
+	result, err := transfer.UploadFile(a.fileHTTPClient, a.cfg.ServerURL, path, func(sent, total int64) {
+		a.transferMgr.UpdateProgress(transferID, sent, total)
+	})
+	if err != nil {
+		a.transferMgr.MarkFailed(transferID, err)
+		slog.Error("大文件上传失败", "path", path, "error", err)
+		return
+	}
+	offer := transfer.FileOfferPayload{
+		TransferID: transferID,
+		RelayID:    result.RelayID,
+		FileName:   result.FileName,
+		FileSize:   result.FileSize,
+		SHA256:     result.SHA256,
+		MimeType:   result.MimeType,
+		Transport:  "http_relay",
+	}
+	data, err := json.Marshal(offer)
+	if err != nil {
+		a.transferMgr.MarkFailed(transferID, err)
+		return
+	}
+	clipData := &protocol.ClipboardData{Payload: string(data), Type: constants.TypeFileOffer, FileName: result.FileName}
+	body, err := a.encodeClipboardData(clipData)
+	if err != nil {
+		a.transferMgr.MarkFailed(transferID, err)
+		return
+	}
+	if err := a.sendEncodedBody(body); err != nil {
+		a.transferMgr.MarkFailed(transferID, err)
+		return
+	}
+	a.transferMgr.MarkCompleted(transferID)
+}
+
+func (a *Application) handleFileOffer(clipData *protocol.ClipboardData) {
+	var offer transfer.FileOfferPayload
+	if err := json.Unmarshal([]byte(clipData.Payload), &offer); err != nil {
+		slog.Warn("file offer 解析失败", "error", err)
+		return
+	}
+	if offer.RelayID == "" {
+		return
+	}
+	transferID := offer.TransferID
+	if transferID == "" {
+		transferID = fmt.Sprintf("download-%d", time.Now().UnixNano())
+	}
+	a.transferMgr.Start(transferID, transfer.DirectionDownload, offer.FileName, offer.FileSize)
+	tempDir := filepath.Join(os.TempDir(), "ClipCascade")
+	if err := os.MkdirAll(tempDir, 0o755); err != nil {
+		a.transferMgr.MarkFailed(transferID, err)
+		return
+	}
+	destPath := filepath.Join(tempDir, sanitizeOfferName(offer.FileName))
+	if err := transfer.DownloadFile(a.fileHTTPClient, a.cfg.ServerURL, offer.RelayID, destPath, offer.SHA256, func(done, total int64) {
+		a.transferMgr.UpdateProgress(transferID, done, total)
+	}); err != nil {
+		a.transferMgr.MarkFailed(transferID, err)
+		return
+	}
+	a.transferMgr.MarkVerifying(transferID)
+	if err := a.clip.PasteLocalFile(destPath); err != nil {
+		a.transferMgr.MarkFailed(transferID, err)
+		return
+	}
+	a.transferMgr.MarkCompleted(transferID)
+}
+
+func sanitizeOfferName(name string) string {
+	name = filepath.Base(strings.TrimSpace(name))
+	name = strings.ReplaceAll(name, "\x00", "")
+	if name == "" || name == "." {
+		return fmt.Sprintf("clipcascade-file-%d", time.Now().Unix())
+	}
+	return name
 }
 
 // monitorConnection 检查连接健康状况并触发重连。

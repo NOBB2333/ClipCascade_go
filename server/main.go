@@ -54,6 +54,8 @@ func main() {
 		"p2p", cfg.P2PEnabled,
 		"signup", cfg.SignupEnabled,
 		"max_msg_mib", cfg.MaxMessageSizeMiB,
+		"file_relay", cfg.FileRelayEnabled,
+		"file_relay_max_bytes", cfg.FileRelayMaxBytes,
 	)
 
 	// 初始化界面数据库
@@ -73,6 +75,12 @@ func main() {
 		slog.Error("数据库迁移失败", "error", err)
 		os.Exit(1)
 	}
+	if cfg.FileRelayEnabled {
+		if err := os.MkdirAll(cfg.FileRelayDir, 0o755); err != nil {
+			slog.Error("创建文件中转目录失败", "error", err)
+			os.Exit(1)
+		}
+	}
 
 	// 如果不存在，播种默认 admin user
 	seedAdminUser(db)
@@ -88,9 +96,16 @@ func main() {
 	engine := html.NewFileSystem(http.FS(templatesFS), ".html")
 
 	// 创建带有模板引擎的 Fiber app
+	bodyLimit := int(cfg.EffectiveMaxMessageBytes()) + 1024*1024
+	if cfg.FileRelayEnabled && cfg.FileRelayMaxBytes > 0 {
+		relayLimit := int(cfg.FileRelayMaxBytes + 1024*1024)
+		if relayLimit > bodyLimit {
+			bodyLimit = relayLimit
+		}
+	}
 	app := fiber.New(fiber.Config{
 		Views:     engine,
-		BodyLimit: int(cfg.EffectiveMaxMessageBytes()) + 1024*1024, // max msg + 1MB 开销
+		BodyLimit: bodyLimit,
 	})
 
 	// 全局中间件
@@ -116,6 +131,11 @@ func main() {
 
 	authHandler := handler.NewAuthHandler(db, cfg, bfa)
 	statusHandler := handler.NewStatusHandler(cfg)
+	fileTransferHandler := handler.NewFileTransferHandler(db, cfg)
+	fileRelayStop := make(chan struct{})
+	if cfg.FileRelayEnabled {
+		go fileTransferHandler.RunCleanupLoop(10*time.Minute, fileRelayStop)
+	}
 
 	// ---- 公共路由 (无需 auth) ----
 	// 应用蛮力攻击保护中间件到登录和注册
@@ -182,6 +202,8 @@ func main() {
 	app.Get("/api/ws-stats", func(c *fiber.Ctx) error {
 		return c.JSON(wsHub.Stats())
 	})
+	app.Post("/api/files/upload", fileTransferHandler.Upload)
+	app.Get("/api/files/:relayID", fileTransferHandler.Download)
 	app.Get("/api/user-info", func(c *fiber.Ctx) error {
 		userID, _ := c.Locals("user_id").(uint)
 		var info model.UserInfo
@@ -278,6 +300,7 @@ func main() {
 		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 		<-sigChan
 		slog.Info("正在关闭服务器...")
+		close(fileRelayStop)
 		if mdnsServer != nil {
 			mdnsServer.Shutdown()
 		}

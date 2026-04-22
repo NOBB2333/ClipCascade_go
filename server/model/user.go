@@ -21,11 +21,11 @@ type User struct {
 
 // UserInfo 存储 login 期间提供的每个 user 的加密设置。
 type UserInfo struct {
-	ID         uint   `gorm:"primarykey" json:"id"`
-	UserID     uint   `gorm:"uniqueIndex;not null" json:"user_id"`
-	Salt       string `gorm:"size:255" json:"salt"`
-	HashRounds int    `gorm:"default:100000" json:"hash_rounds"`
-	MaxSize    int64  `gorm:"default:0" json:"max_size"` // client 请求的最大大小，0 = server 默认值
+	ID         uint      `gorm:"primarykey" json:"id"`
+	UserID     uint      `gorm:"uniqueIndex;not null" json:"user_id"`
+	Salt       string    `gorm:"size:255" json:"salt"`
+	HashRounds int       `gorm:"default:100000" json:"hash_rounds"`
+	MaxSize    int64     `gorm:"default:0" json:"max_size"` // client 请求的最大大小，0 = server 默认值
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
 }
@@ -37,5 +37,5 @@ func (u *User) IsAdmin() bool {
 
 // InitDB 初始化数据库连接并自动迁移模型。
 func InitDB(db *gorm.DB) error {
-	return db.AutoMigrate(&User{}, &UserInfo{})
+	return db.AutoMigrate(&User{}, &UserInfo{}, &FileTransfer{})
 }

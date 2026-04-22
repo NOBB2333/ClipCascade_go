@@ -212,23 +212,50 @@ func setPlatformImage(data []byte) error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
+	// 先分配全部内存，再打开剪贴板。
+	// 这样即使分配失败，EmptyClipboard 也不会被调用，剪贴板原有内容得以保留。
+	hDib, err := allocGlobalMem(dib)
+	if err != nil {
+		return err
+	}
+
+	pngFormat := getRegisteredClipboardFormat("PNG")
+	var hPng uintptr
+	if pngFormat != 0 {
+		hPng, _ = allocGlobalMem(data) // PNG 是可选格式，忽略分配失败
+	}
+
 	if err := openClipboardForWrite(); err != nil {
+		procGlobalFree.Call(hDib)
+		if hPng != 0 {
+			procGlobalFree.Call(hPng)
+		}
 		return err
 	}
 	defer procCloseClipboard.Call()
 
 	r, _, err := procEmptyClipboard.Call()
 	if r == 0 {
+		procGlobalFree.Call(hDib)
+		if hPng != 0 {
+			procGlobalFree.Call(hPng)
+		}
 		return err
 	}
 
-	if err := setClipboardDataBytes(CF_DIBV5, dib); err != nil {
-		return err
+	// SetClipboardData 成功后，句柄所有权转移给系统，不能再 free。
+	if r, _, e := procSetClipboardData.Call(CF_DIBV5, hDib); r == 0 {
+		procGlobalFree.Call(hDib)
+		if hPng != 0 {
+			procGlobalFree.Call(hPng)
+		}
+		return e
 	}
 
-	if pngFormat := getRegisteredClipboardFormat("PNG"); pngFormat != 0 {
-		if err := setClipboardDataBytes(pngFormat, data); err != nil {
-			slog.Warn("剪贴板：Windows 写入 PNG 注册格式失败", "错误", err)
+	if hPng != 0 {
+		if r, _, _ := procSetClipboardData.Call(pngFormat, hPng); r == 0 {
+			procGlobalFree.Call(hPng)
+			slog.Warn("剪贴板：Windows 写入 PNG 注册格式失败")
 		}
 	}
 
@@ -280,7 +307,13 @@ func openClipboardForWrite() error {
 			continue
 		}
 	}
-	_, _, err := procOpenClipboard.Call(0)
+	// 最后一次尝试：必须检查返回值 r 而非 err。
+	// Windows 的 GetLastError 在成功调用后不会自动清零，err 可能残留上一次
+	// 的 ERROR_ACCESS_DENIED，导致误报失败并使剪贴板处于锁定状态。
+	r, _, err := procOpenClipboard.Call(0)
+	if r != 0 {
+		return nil
+	}
 	return err
 }
 
@@ -293,25 +326,35 @@ func getRegisteredClipboardFormat(name string) uintptr {
 	return r
 }
 
+// allocGlobalMem 分配可移动全局内存并填充 data，返回句柄。
+// 调用方负责在不再需要时调用 GlobalFree，但若将句柄传给 SetClipboardData 成功，
+// 则所有权转移给系统，不可再 free。
+func allocGlobalMem(data []byte) (uintptr, error) {
+	if len(data) == 0 {
+		return 0, syscall.EINVAL
+	}
+	hMem, _, err := procGlobalAlloc.Call(gmemMoveable, uintptr(len(data)))
+	if hMem == 0 {
+		return 0, err
+	}
+	ptr, _, err := procGlobalLock.Call(hMem)
+	if ptr == 0 {
+		procGlobalFree.Call(hMem)
+		return 0, err
+	}
+	procRtlMoveMemory.Call(ptr, uintptr(unsafe.Pointer(&data[0])), uintptr(len(data)))
+	procGlobalUnlock.Call(hMem)
+	return hMem, nil
+}
+
 func setClipboardDataBytes(format uintptr, data []byte) error {
 	if len(data) == 0 {
 		return nil
 	}
-
-	hMem, _, err := procGlobalAlloc.Call(gmemMoveable, uintptr(len(data)))
-	if hMem == 0 {
+	hMem, err := allocGlobalMem(data)
+	if err != nil {
 		return err
 	}
-
-	ptr, _, err := procGlobalLock.Call(hMem)
-	if ptr == 0 {
-		procGlobalFree.Call(hMem)
-		return err
-	}
-
-	procRtlMoveMemory.Call(ptr, uintptr(unsafe.Pointer(&data[0])), uintptr(len(data)))
-	procGlobalUnlock.Call(hMem)
-
 	r, _, err := procSetClipboardData.Call(format, hMem)
 	if r == 0 {
 		procGlobalFree.Call(hMem)

@@ -28,6 +28,10 @@ type Config struct {
 	LockScalingFactor     int
 	BFACacheEnabled       bool
 	DatabasePath          string
+	FileRelayEnabled      bool
+	FileRelayDir          string
+	FileRelayMaxBytes     int64
+	FileRelayTTLSeconds   int64
 	ExternalBrokerEnabled bool
 	BrokerHost            string
 	BrokerPort            int
@@ -52,6 +56,10 @@ func Load() *Config {
 		LockScalingFactor:     envInt("CC_LOCK_TIMEOUT_SCALING_FACTOR", constants.DefaultLockScalingFactor),
 		BFACacheEnabled:       envBool("CC_BFA_CACHE_ENABLED", true),
 		DatabasePath:          envStr("CC_DATABASE_PATH", "./database/clipcascade.db"),
+		FileRelayEnabled:      envBool("CC_FILE_RELAY_ENABLED", true),
+		FileRelayDir:          envStr("CC_FILE_RELAY_DIR", "./uploads"),
+		FileRelayMaxBytes:     envInt64("CC_FILE_RELAY_MAX_BYTES", constants.DefaultFileRelayMaxBytes),
+		FileRelayTTLSeconds:   envInt64("CC_FILE_RELAY_TTL_SECONDS", 86400),
 		ExternalBrokerEnabled: envBool("CC_EXTERNAL_BROKER_ENABLED", false),
 		BrokerHost:            envStr("CC_BROKER_HOST", "localhost"),
 		BrokerPort:            envInt("CC_BROKER_PORT", 61613),

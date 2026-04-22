@@ -431,7 +431,7 @@ func buildFileEagerPayload(path string) (payload string, filename string, ok boo
 	if err != nil || info.IsDir() {
 		return "", "", false
 	}
-	const maxEagerBytes = constants.DefaultMaxMessageSizeMiB * 1024 * 1024
+	const maxEagerBytes = constants.DefaultFileEagerThresholdBytes
 	if info.Size() <= 0 || info.Size() > maxEagerBytes {
 		return "", "", false
 	}
@@ -501,4 +501,25 @@ func cleanupOldTempFiles(dir string, olderThan time.Duration) {
 			_ = os.Remove(path)
 		}
 	}
+}
+
+// PasteLocalFile 将现有本地文件路径写入系统剪贴板。
+func (m *Manager) PasteLocalFile(path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fmt.Errorf("empty path")
+	}
+	if _, err := os.Stat(path); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	m.lastHash = pkgcrypto.XXHash64(path)
+	m.mu.Unlock()
+	if err := setPlatformFilePaths([]string{path}); err != nil {
+		return err
+	}
+	if m.notifier != nil {
+		m.notifier("ClipCascade", fmt.Sprintf("收到文件并写入剪贴板 (%s)", filepath.Base(path)))
+	}
+	return nil
 }
